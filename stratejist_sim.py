@@ -1,4 +1,9 @@
-API_KEY = "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"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
+
 
 import openai
 import json
