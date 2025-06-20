@@ -83,8 +83,8 @@ class Grid:
             for y in range(11):
                 self.tiles[x][y].type = 'BASE'
 
-        # Engeller
-        for _ in range(int(self.width * self.height * 0.15)): # Haritanın %15'i engel olsun
+        # Engeller (azaltıldı)
+        for _ in range(int(self.width * self.height * 0.05)): # Haritanın %5'i engel olsun
             x, y = random.randint(0, self.width - 1), random.randint(0, self.height - 1)
             if self.tiles[x][y].type == 'EMPTY':
                 self.tiles[x][y].type = 'OBSTACLE'
@@ -190,6 +190,8 @@ class DroneAgent:
         self.current_command = {"command_type": "STANDBY"}
         self.scan_results = []
         self.scan_mode = 'PASSIVE' # 'ACTIVE' veya 'PASSIVE'
+        self.path = [] # A* path finding için
+        self.known_tiles = {} # Drone'un bildiği tile'lar (stratejist'ten alınır)
 
     def set_command(self, command):
         self.current_command = command
@@ -197,6 +199,10 @@ class DroneAgent:
         if 'scan_mode' in command:
             self.scan_mode = command['scan_mode']
             print(f"{self.id} scan mode güncellendi: {self.scan_mode}")
+        # Known tiles güncellemesi (stratejist'ten gelen bilgi)
+        if 'known_tiles' in command:
+            self.known_tiles = command['known_tiles']
+            print(f"{self.id} harita bilgisi güncellendi: {len(self.known_tiles)} karo biliniyor")
 
     def update(self):
         """Her tick'te çağrılan ana güncelleme metodu."""
@@ -229,11 +235,11 @@ class DroneAgent:
                 pass # Bekle
 
     def move(self, target_position):
-        """Belirtilen hedefe doğru bir kare hareket eder."""
-        dx = target_position['x'] - self.position['x']
-        dy = target_position['y'] - self.position['y']
-
-        if dx == 0 and dy == 0: # Hedefe ulaşıldı
+        """Belirtilen hedefe doğru path finding ile hareket eder."""
+        target_x, target_y = target_position['x'], target_position['y']
+        
+        if self.position['x'] == target_x and self.position['y'] == target_y: # Hedefe ulaşıldı
+            self.path = []  # Path'i temizle
             # Hedefe ulaştıktan sonra scan mode kontrol et
             if self.scan_mode == 'ACTIVE':
                 print(f"{self.id} hedefe ulaştı ve otomatik tarama yapıyor (ACTIVE mode)")
@@ -242,27 +248,108 @@ class DroneAgent:
                 self.current_command = {"command_type": "STANDBY"} # Yeni komut bekle
             return
 
-        # Basit hareket mantığı
-        next_x, next_y = self.position['x'], self.position['y']
-        if abs(dx) > abs(dy):
-            next_x += 1 if dx > 0 else -1
-        else:
-            next_y += 1 if dy > 0 else -1
-        
-        tile = self.grid.get_tile(next_x, next_y)
-        if tile and tile.type != 'OBSTACLE':
-            self.position['x'] = next_x
-            self.position['y'] = next_y
-            self.battery -= COST_MOVE
+        # Path yoksa veya geçerli değilse yeni path hesapla
+        if not self.path or not self._is_path_valid():
+            self.path = self._find_path_to_target(target_x, target_y)
+            if not self.path:
+                print(f"{self.id} hedefe ({target_x},{target_y}) path bulunamadı, bekliyor.")
+                self.current_command = {"command_type": "STANDBY"}
+                return
+
+        # Path'teki bir sonraki pozisyona git
+        if self.path:
+            next_pos = self.path.pop(0)
+            next_x, next_y = next_pos['x'], next_pos['y']
             
-            # ACTIVE scan mode ise her hareket sonrası tarama yap
-            if self.scan_mode == 'ACTIVE' and random.random() < 0.3: # %30 şans ile tarama
-                print(f"{self.id} hareket ederken çevreyi taradı (ACTIVE mode)")
-                self.scan()
-        else:
-            # Engel var, komutu beklemeye al
-            print(f"{self.id} engele takıldı, yeni rota bekliyor.")
-            self.current_command = {"command_type": "STANDBY"}
+            # Ground truth kontrolü (gerçek collision detection)
+            tile = self.grid.get_tile(next_x, next_y)
+            if tile and tile.type != 'OBSTACLE':
+                self.position['x'] = next_x
+                self.position['y'] = next_y
+                self.battery -= COST_MOVE
+                
+                # ACTIVE scan mode ise her hareket sonrası tarama yap
+                if self.scan_mode == 'ACTIVE' and random.random() < 0.3: # %30 şans ile tarama
+                    print(f"{self.id} hareket ederken çevreyi taradı (ACTIVE mode)")
+                    self.scan()
+            else:
+                # Gerçek engele çarptı (bilinmeyen engel keşfedildi)
+                print(f"{self.id} bilinmeyen engele çarptı ({next_x},{next_y}), yeni rota hesaplıyor.")
+                # Bu engeli known_tiles'a ekle (keşfedildi)
+                self.known_tiles[(next_x, next_y)] = {'type': 'OBSTACLE', 'position': {'x': next_x, 'y': next_y}}
+                self.path = []
+
+    def _is_path_valid(self):
+        """Mevcut path'in hala geçerli olup olmadığını kontrol eder."""
+        for pos in self.path:
+            tile = self.grid.get_tile(pos['x'], pos['y'])
+            if not tile or tile.type == 'OBSTACLE':
+                return False
+        return True
+
+    def _find_path_to_target(self, target_x, target_y):
+        """A* benzeri basit path finding algoritması."""
+        from collections import deque
+        
+        start = (self.position['x'], self.position['y'])
+        target = (target_x, target_y)
+        
+        if start == target:
+            return []
+        
+        # BFS ile path bulma (A* yerine daha basit)
+        queue = deque([(start, [])])
+        visited = {start}
+        
+        directions = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]  # 8 yön
+        
+        while queue:
+            (x, y), path = queue.popleft()
+            
+            # Hedefe ulaştık mı?
+            if (x, y) == target:
+                return [{'x': px, 'y': py} for px, py in path]
+            
+            # Path çok uzarsa durabilir (performans için)
+            if len(path) > 50:
+                continue
+            
+            # Komşuları kontrol et
+            for dx, dy in directions:
+                next_x, next_y = x + dx, y + dy
+                
+                if (next_x, next_y) in visited:
+                    continue
+                    
+                # Harita sınırları kontrolü
+                if not (0 <= next_x < self.grid.width and 0 <= next_y < self.grid.height):
+                    continue
+                
+                tile = self.grid.get_tile(next_x, next_y)
+                if not tile:
+                    continue
+                
+                # Bilinen engelleri kontrol et
+                if self._is_known_obstacle(next_x, next_y):
+                    continue
+                
+                visited.add((next_x, next_y))
+                new_path = path + [(next_x, next_y)]
+                queue.append(((next_x, next_y), new_path))
+        
+        # Path bulunamadı
+        return []
+
+    def _is_known_obstacle(self, x, y):
+        """Drone'un bildiği engelleri kontrol eder (sadece known tiles)."""
+        # Sadece bilinen tile'lardaki engelleri kontrol et
+        tile_key = (x, y)
+        if tile_key in self.known_tiles:
+            tile_data = self.known_tiles[tile_key]
+            return tile_data.get('type') == 'OBSTACLE'
+        
+        # Bilinmeyen tile'lar engel değil (geçilebilir kabul edilir)
+        return False
 
     def scan(self):
         self.scan_results = self.grid.get_visible_tiles(
@@ -298,6 +385,9 @@ class DroneAgent:
             if tile.type == 'TARGET':
                 tile_data["properties"] = tile.properties
             report["scan_results"].append(tile_data)
+            
+            # Tarama sonuçlarını kendi known_tiles'ına da ekle
+            self.known_tiles[(tile.x, tile.y)] = tile_data
 
         self.battery -= COST_REPORT
         self.scan_results = []  # Raporlandıktan sonra tarama sonuçlarını temizle
@@ -510,12 +600,20 @@ class SimulationEngine:
 
         print(f"\n--- TICK {self.current_tick} | Stratejist'in Değerlendirmesi ---\n{commands_json.get('reasoning')}\n")
 
+        # Her drone'a güncel known_tiles bilgisini gönder
+        for drone in self.drones:
+            if drone.status == 'ACTIVE':
+                # Stratejist'in bildiği tüm tile'ları drone'a aktar
+                drone.known_tiles = self.central_strategist.world_model['known_tiles'].copy()
+
         for command in commands_json['commands']:
             cmd_type = command.get('command_type')
             if cmd_type in ['MOVE_DRONE', 'SCAN_AREA', 'STANDBY']:
                 drone_id = command.get('drone_id')
                 for drone in self.drones:
                     if drone.id == drone_id and drone.status == 'ACTIVE':
+                        # Known tiles bilgisini komuta ekle
+                        command['known_tiles'] = self.central_strategist.world_model['known_tiles'].copy()
                         drone.set_command(command)
                         print(f"Komut verildi: {drone_id} -> {cmd_type}")
                         break
