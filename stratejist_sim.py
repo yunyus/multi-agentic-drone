@@ -425,8 +425,10 @@ Now, analyze the provided world state and generate the commands for the next tic
         if MOCK_LLM_RESPONSE:
             print("--- MOCK LLM KULLANILIYOR ---")
             mock_response = {
-                "reasoning": "Bu sahte bir yanıttır. D-1'i haritanın kuzeybatısına gönderip scan yapacağım, D-2'yi kuzeydoğusuna gönderip scan yapacağım.",
+                "reasoning": "Bu sahte bir yanıttır. D-1 ve D-2'yi keşif için ACTIVE scan mode'da gönderiyorum, D-3 ve D-4'ü manuel tarama yapacak.",
                 "commands": [
+                    {"command_type": "SET_SCAN_MODE", "drone_id": "D-1", "scan_mode": "ACTIVE"},
+                    {"command_type": "SET_SCAN_MODE", "drone_id": "D-2", "scan_mode": "ACTIVE"},
                     {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 25, "y": 75}},
                     {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 75, "y": 75}},
                     {"command_type": "SCAN_AREA", "drone_id": "D-3"},
@@ -516,6 +518,14 @@ class SimulationEngine:
                     if drone.id == drone_id and drone.status == 'ACTIVE':
                         drone.set_command(command)
                         print(f"Komut verildi: {drone_id} -> {cmd_type}")
+                        break
+            elif cmd_type == 'SET_SCAN_MODE':
+                drone_id = command.get('drone_id')
+                scan_mode = command.get('scan_mode')
+                for drone in self.drones:
+                    if drone.id == drone_id and drone.status == 'ACTIVE':
+                        drone.scan_mode = scan_mode
+                        print(f"Scan mode değiştirildi: {drone_id} -> {scan_mode}")
                         break
             elif cmd_type == 'FIRE_MISSILE':
                 self.missile_system.fire(command.get('target_position'))
