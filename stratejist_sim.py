@@ -189,9 +189,14 @@ class DroneAgent:
         self.status = 'ACTIVE' # 'ACTIVE', 'RECHARGING', 'DESTROYED'
         self.current_command = {"command_type": "STANDBY"}
         self.scan_results = []
+        self.scan_mode = 'PASSIVE' # 'ACTIVE' veya 'PASSIVE'
 
     def set_command(self, command):
         self.current_command = command
+        # Scan mode komutunu ayrı olarak işle
+        if 'scan_mode' in command:
+            self.scan_mode = command['scan_mode']
+            print(f"{self.id} scan mode güncellendi: {self.scan_mode}")
 
     def update(self):
         """Her tick'te çağrılan ana güncelleme metodu."""
@@ -229,7 +234,12 @@ class DroneAgent:
         dy = target_position['y'] - self.position['y']
 
         if dx == 0 and dy == 0: # Hedefe ulaşıldı
-            self.current_command = {"command_type": "STANDBY"} # Yeni komut bekle
+            # Hedefe ulaştıktan sonra scan mode kontrol et
+            if self.scan_mode == 'ACTIVE':
+                print(f"{self.id} hedefe ulaştı ve otomatik tarama yapıyor (ACTIVE mode)")
+                self.scan()
+            else:
+                self.current_command = {"command_type": "STANDBY"} # Yeni komut bekle
             return
 
         # Basit hareket mantığı
@@ -244,6 +254,11 @@ class DroneAgent:
             self.position['x'] = next_x
             self.position['y'] = next_y
             self.battery -= COST_MOVE
+            
+            # ACTIVE scan mode ise her hareket sonrası tarama yap
+            if self.scan_mode == 'ACTIVE' and random.random() < 0.3: # %30 şans ile tarama
+                print(f"{self.id} hareket ederken çevreyi taradı (ACTIVE mode)")
+                self.scan()
         else:
             # Engel var, komutu beklemeye al
             print(f"{self.id} engele takıldı, yeni rota bekliyor.")
@@ -254,6 +269,7 @@ class DroneAgent:
             self.position['x'], self.position['y'], DRONE_SCAN_RADIUS
         )
         self.battery -= COST_SCAN
+        print(f"{self.id} pozisyon ({self.position['x']},{self.position['y']}) civarını taradı. {len(self.scan_results)} karo bulundu.")
         # Tarama sonrası yeni komut bekle
         self.current_command = {"command_type": "STANDBY"}
 
@@ -346,7 +362,7 @@ class CentralStrategist:
 
         drones_state = []
         for d in drones:
-            state = {"id": d.id, "status": d.status, "battery": round(d.battery, 2)}
+            state = {"id": d.id, "status": d.status, "battery": round(d.battery, 2), "scan_mode": d.scan_mode}
             if d.status == 'DESTROYED':
                 state["last_known_position"] = d.position
             else:
@@ -382,8 +398,8 @@ You are "Stratejist", a central command AI for a swarm of 10 autonomous drones. 
 1.  **Map:** The map is a 100x100 grid. (0,0) is the bottom-left. Your base is at (0,0) to (10,10).
 2.  **Drones:** Drones consume battery for every action. They can recharge at the Base. Send them to base if battery is low (e.g., < 200). Drones that reach their target position will automatically go into STANDBY. Give them a new task.
 3.  **Threats (HSS):** HSSs are stationary and invisible. If a drone is destroyed, its last known position is a strong clue to a HSS location. Assume HSS kill zones are circular. Mark that area as a threat and avoid it.
-4.  **Strategy:** Initially, spread your drones out to explore different quadrants of the map. Example: send D-1 to (25,75), D-2 to (75,75), D-3 to (75,25), D-4 to (25,25). Use others for more detailed exploration. If a target is confirmed, fire a missile. Do not fire at the same location twice.
-5.  **Commands:** You can issue 'MOVE_DRONE', 'FIRE_MISSILE', or 'STANDBY'. You don't need to issue a command for every drone every turn. Drones will continue their previous MOVE command until they reach the destination. Only issue new commands to change their objective or give a task to an idle drone.
+4.  **Strategy:** Initially, spread your drones out to explore different quadrants of the map. Set drone scan_mode to 'ACTIVE' for exploration drones and 'PASSIVE' for strategic drones. ACTIVE drones will automatically scan when they reach destinations and occasionally while moving.
+5.  **Commands:** You can issue 'MOVE_DRONE', 'SCAN_AREA', 'SET_SCAN_MODE', 'FIRE_MISSILE', or 'STANDBY'. You can also set scan_mode='ACTIVE' or 'PASSIVE' for each drone to control their scanning behavior.
 6.  **Communication:** You receive a JSON object with the current world state. You MUST respond with a single valid JSON object containing your reasoning and a list of commands. Do not output any other text or formatting.
 
 # INPUT FORMAT (World State JSON)
@@ -395,6 +411,9 @@ Your response MUST be a single JSON object in this exact format:
   "reasoning": "<Your brief strategic thought process for this turn>",
   "commands": [
     { "command_type": "MOVE_DRONE", "drone_id": "<drone_id>", "target_position": {"x": <int>, "y": <int>} },
+    { "command_type": "SCAN_AREA", "drone_id": "<drone_id>" },
+    { "command_type": "SET_SCAN_MODE", "drone_id": "<drone_id>", "scan_mode": "ACTIVE" },
+    { "command_type": "SET_SCAN_MODE", "drone_id": "<drone_id>", "scan_mode": "PASSIVE" },
     { "command_type": "FIRE_MISSILE", "target_position": {"x": <int>, "y": <int>} },
     { "command_type": "STANDBY", "drone_id": "<drone_id>", "reason": "<optional reason>" }
   ]
@@ -406,10 +425,12 @@ Now, analyze the provided world state and generate the commands for the next tic
         if MOCK_LLM_RESPONSE:
             print("--- MOCK LLM KULLANILIYOR ---")
             mock_response = {
-                "reasoning": "Bu sahte bir yanıttır. D-1'i haritanın kuzeybatısına, D-2'yi kuzeydoğusuna keşif için gönderiyorum.",
+                "reasoning": "Bu sahte bir yanıttır. D-1'i haritanın kuzeybatısına gönderip scan yapacağım, D-2'yi kuzeydoğusuna gönderip scan yapacağım.",
                 "commands": [
                     {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 25, "y": 75}},
-                    {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 75, "y": 75}}
+                    {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 75, "y": 75}},
+                    {"command_type": "SCAN_AREA", "drone_id": "D-3"},
+                    {"command_type": "SCAN_AREA", "drone_id": "D-4"}
                 ]
             }
             return mock_response
@@ -489,11 +510,12 @@ class SimulationEngine:
 
         for command in commands_json['commands']:
             cmd_type = command.get('command_type')
-            if cmd_type == 'MOVE_DRONE' or cmd_type == 'STANDBY':
+            if cmd_type in ['MOVE_DRONE', 'SCAN_AREA', 'STANDBY']:
                 drone_id = command.get('drone_id')
                 for drone in self.drones:
                     if drone.id == drone_id and drone.status == 'ACTIVE':
                         drone.set_command(command)
+                        print(f"Komut verildi: {drone_id} -> {cmd_type}")
                         break
             elif cmd_type == 'FIRE_MISSILE':
                 self.missile_system.fire(command.get('target_position'))
