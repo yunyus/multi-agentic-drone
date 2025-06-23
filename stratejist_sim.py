@@ -659,7 +659,29 @@ Now, analyze the provided world state and generate the commands for the next tic
             )
             llm_output = response.choices[0].message.content
             print("Stratejist'ten gelen yanıt:", llm_output)
-            return json.loads(llm_output)
+            
+            # Add validation before parsing JSON
+            if not llm_output or not llm_output.strip():
+                print("Boş LLM yanıtı alındı")
+                return {"reasoning": "Boş yanıt alındı, tüm birimler beklemeye alındı.", "commands": []}
+            
+            parsed_response = json.loads(llm_output)
+            
+            # Validate the response structure
+            if not isinstance(parsed_response, dict):
+                print(f"LLM yanıtı dictionary değil: {type(parsed_response)}")
+                return {"reasoning": "Geçersiz yanıt formatı alındı, tüm birimler beklemeye alındı.", "commands": []}
+            
+            if 'commands' not in parsed_response:
+                print("LLM yanıtında 'commands' anahtarı bulunamadı")
+                parsed_response['commands'] = []
+            
+            return parsed_response
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing hatası: {e}")
+            print(f"Hatalı JSON: {llm_output}")
+            return {"reasoning": "JSON parsing hatası oluştu, tüm birimler beklemeye alındı.", "commands": []}
         except Exception as e:
             print(f"LLM API Hatası: {e}")
             # Hata durumunda boş komut dön
@@ -718,7 +740,13 @@ class SimulationEngine:
             print("Geçersiz komut formatı alındı. Drone'lar bekliyor.")
             return
 
-        print(f"\n--- TICK {self.current_tick} | Stratejist'in Değerlendirmesi ---\n{commands_json.get('reasoning')}\n")
+        # Fix for 'str' object has no attribute 'get' error
+        if isinstance(commands_json, str):
+            print(f"LLM string yanıtı alındı: {commands_json}")
+            return
+        
+        reasoning = commands_json.get('reasoning', 'Reasoning bilgisi yok')
+        print(f"\n--- TICK {self.current_tick} | Stratejist'in Değerlendirmesi ---\n{reasoning}\n")
 
         # Her drone'a güncel known_tiles ve threat_zones bilgisini gönder
         for drone in self.drones:
