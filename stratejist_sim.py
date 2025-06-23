@@ -192,6 +192,9 @@ class DroneAgent:
         self.scan_mode = 'PASSIVE' # 'ACTIVE' veya 'PASSIVE'
         self.path = [] # A* path finding için
         self.known_tiles = {} # Drone'un bildiği tile'lar (stratejist'ten alınır)
+        self.threat_zones = [] # Tehlike bölgeleri (merkezi sistemden alınır)
+        self.client = openai.OpenAI(api_key=API_KEY) # Drone'un kendi LLM client'ı
+        self.last_llm_consultation_tick = 0
 
     def set_command(self, command):
         self.current_command = command
@@ -203,12 +206,17 @@ class DroneAgent:
         if 'known_tiles' in command:
             self.known_tiles = command['known_tiles']
             print(f"{self.id} harita bilgisi güncellendi: {len(self.known_tiles)} karo biliniyor")
+        # Threat zones güncellemesi (merkezi sistemden)
+        if 'threat_zones' in command:
+            self.threat_zones = command['threat_zones']
+            print(f"{self.id} tehlike bölgesi bilgisi güncellendi: {len(self.threat_zones)} zone biliniyor")
 
-    def update(self):
+    def update(self, current_tick=0):
         """Her tick'te çağrılan ana güncelleme metodu."""
         if self.status != 'ACTIVE':
             return
         
+        self.current_tick = current_tick  # LLM danışmanlık için tick bilgisi
         self.execute_command()
         
         # Pil biterse
@@ -288,7 +296,7 @@ class DroneAgent:
         return True
 
     def _find_path_to_target(self, target_x, target_y):
-        """A* benzeri basit path finding algoritması."""
+        """LLM destekli akıllı path finding algoritması."""
         from collections import deque
         
         start = (self.position['x'], self.position['y'])
@@ -297,7 +305,93 @@ class DroneAgent:
         if start == target:
             return []
         
-        # BFS ile path bulma (A* yerine daha basit)
+        # LLM'den path planning stratejisi al (belirli aralıklarla)
+        current_tick = getattr(self, 'current_tick', 0)
+        should_consult_llm = (
+            current_tick - self.last_llm_consultation_tick > 10 or  # 10 tick'te bir
+            len(self.threat_zones) > 0 or  # Tehlike zone'ları varsa
+            self._is_high_risk_area(target_x, target_y)  # Hedef riskli alandaysa
+        )
+        
+        if should_consult_llm and not MOCK_LLM_RESPONSE:
+            path_strategy = self._consult_llm_for_path(target_x, target_y)
+            self.last_llm_consultation_tick = current_tick
+        else:
+            path_strategy = "DIRECT"  # Varsayılan strateji
+        
+        # Strateji bazlı path finding
+        if path_strategy == "AVOID_THREATS":
+            return self._find_safe_path(target_x, target_y)
+        elif path_strategy == "CAUTIOUS":
+            return self._find_cautious_path(target_x, target_y)
+        else:  # DIRECT
+            return self._find_direct_path(target_x, target_y)
+
+    def _consult_llm_for_path(self, target_x, target_y):
+        """LLM'den path planning stratejisi danışmanlığı al."""
+        situation = {
+            "drone_id": self.id,
+            "current_position": self.position,
+            "target_position": {"x": target_x, "y": target_y},
+            "battery": self.battery,
+            "known_obstacles": [{"x": x, "y": y} for (x, y), tile in self.known_tiles.items() if tile.get('type') == 'OBSTACLE'],
+            "threat_zones": self.threat_zones,
+            "scan_mode": self.scan_mode
+        }
+        
+        prompt = f"""
+You are a drone navigation AI. Your task is to choose the best path strategy to reach the target.
+
+SITUATION:
+{json.dumps(situation, indent=2)}
+
+STRATEGIES:
+1. DIRECT - Shortest path, ignore threat zones (risky but fast)
+2. AVOID_THREATS - Avoid all known threat zones (safe but longer)
+3. CAUTIOUS - Balance between safety and efficiency
+
+Consider:
+- Threat zones are areas where other drones were destroyed
+- Battery level (low battery = prefer shorter paths)
+- Known obstacles must always be avoided
+- Unknown areas might contain threats
+
+Respond with only ONE word: DIRECT, AVOID_THREATS, or CAUTIOUS
+"""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",  # Daha hızlı ve ucuz model
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0.1
+            )
+            strategy = response.choices[0].message.content.strip().upper()
+            print(f"{self.id} LLM stratejisi: {strategy}")
+            return strategy if strategy in ["DIRECT", "AVOID_THREATS", "CAUTIOUS"] else "DIRECT"
+        except Exception as e:
+            print(f"{self.id} LLM danışmanlık hatası: {e}")
+            return "DIRECT"
+
+    def _find_direct_path(self, target_x, target_y):
+        """En kısa yol (tehlike zone'larını görmezden gelir)."""
+        return self._bfs_pathfind(target_x, target_y, avoid_threats=False)
+
+    def _find_safe_path(self, target_x, target_y):
+        """Güvenli yol (tehlike zone'larından kaçınır)."""
+        return self._bfs_pathfind(target_x, target_y, avoid_threats=True)
+
+    def _find_cautious_path(self, target_x, target_y):
+        """Dengeli yol (tehlike zone'larına yaklaşmaktan kaçınır)."""
+        return self._bfs_pathfind(target_x, target_y, avoid_threats=True, caution_radius=3)
+
+    def _bfs_pathfind(self, target_x, target_y, avoid_threats=False, caution_radius=0):
+        """BFS ile path bulma (tehlike zone desteği ile)."""
+        from collections import deque
+        
+        start = (self.position['x'], self.position['y'])
+        target = (target_x, target_y)
+        
         queue = deque([(start, [])])
         visited = {start}
         
@@ -311,7 +405,7 @@ class DroneAgent:
                 return [{'x': px, 'y': py} for px, py in path]
             
             # Path çok uzarsa durabilir (performans için)
-            if len(path) > 50:
+            if len(path) > 60:  # Güvenli path'ler daha uzun olabilir
                 continue
             
             # Komşuları kontrol et
@@ -333,9 +427,18 @@ class DroneAgent:
                 if self._is_known_obstacle(next_x, next_y):
                     continue
                 
+                # Tehlike zone kontrolü
+                if avoid_threats and self._is_in_threat_zone(next_x, next_y, caution_radius):
+                    continue
+                
                 visited.add((next_x, next_y))
                 new_path = path + [(next_x, next_y)]
                 queue.append(((next_x, next_y), new_path))
+        
+        # Güvenli path bulunamadıysa, riskli path dene
+        if avoid_threats:
+            print(f"{self.id} güvenli path bulunamadı, riskli path deneniyor...")
+            return self._bfs_pathfind(target_x, target_y, avoid_threats=False)
         
         # Path bulunamadı
         return []
@@ -350,6 +453,23 @@ class DroneAgent:
         
         # Bilinmeyen tile'lar engel değil (geçilebilir kabul edilir)
         return False
+
+    def _is_in_threat_zone(self, x, y, extra_radius=0):
+        """Bir koordinatın tehlike zone'unda olup olmadığını kontrol eder."""
+        for zone in self.threat_zones:
+            center = zone.get('center', {})
+            zone_radius = zone.get('radius', 10) + extra_radius
+            
+            # Euclidean distance
+            dist_sq = (x - center.get('x', 0))**2 + (y - center.get('y', 0))**2
+            if dist_sq <= zone_radius**2:
+                return True
+        return False
+
+    def _is_high_risk_area(self, x, y):
+        """Hedef koordinatın yüksek riskli alan olup olmadığını kontrol eder."""
+        # Tehlike zone'larına çok yakınsa yüksek risk
+        return self._is_in_threat_zone(x, y, extra_radius=5)
 
     def scan(self):
         self.scan_results = self.grid.get_visible_tiles(
@@ -539,7 +659,29 @@ Now, analyze the provided world state and generate the commands for the next tic
             )
             llm_output = response.choices[0].message.content
             print("Stratejist'ten gelen yanıt:", llm_output)
-            return json.loads(llm_output)
+            
+            # Add validation before parsing JSON
+            if not llm_output or not llm_output.strip():
+                print("Boş LLM yanıtı alındı")
+                return {"reasoning": "Boş yanıt alındı, tüm birimler beklemeye alındı.", "commands": []}
+            
+            parsed_response = json.loads(llm_output)
+            
+            # Validate the response structure
+            if not isinstance(parsed_response, dict):
+                print(f"LLM yanıtı dictionary değil: {type(parsed_response)}")
+                return {"reasoning": "Geçersiz yanıt formatı alındı, tüm birimler beklemeye alındı.", "commands": []}
+            
+            if 'commands' not in parsed_response:
+                print("LLM yanıtında 'commands' anahtarı bulunamadı")
+                parsed_response['commands'] = []
+            
+            return parsed_response
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing hatası: {e}")
+            print(f"Hatalı JSON: {llm_output}")
+            return {"reasoning": "JSON parsing hatası oluştu, tüm birimler beklemeye alındı.", "commands": []}
         except Exception as e:
             print(f"LLM API Hatası: {e}")
             # Hata durumunda boş komut dön
@@ -602,13 +744,20 @@ class SimulationEngine:
             print("Geçersiz komut formatı alındı. Drone'lar bekliyor.")
             return
 
-        print(f"\n--- TICK {self.current_tick} | Stratejist'in Değerlendirmesi ---\n{commands_json.get('reasoning')}\n")
+        # Fix for 'str' object has no attribute 'get' error
+        if isinstance(commands_json, str):
+            print(f"LLM string yanıtı alındı: {commands_json}")
+            return
+        
+        reasoning = commands_json.get('reasoning', 'Reasoning bilgisi yok')
+        print(f"\n--- TICK {self.current_tick} | Stratejist'in Değerlendirmesi ---\n{reasoning}\n")
 
-        # Her drone'a güncel known_tiles bilgisini gönder
+        # Her drone'a güncel known_tiles ve threat_zones bilgisini gönder
         for drone in self.drones:
             if drone.status == 'ACTIVE':
-                # Stratejist'in bildiği tüm tile'ları drone'a aktar
+                # Stratejist'in bildiği tüm tile'ları ve tehlike zone'larını drone'a aktar
                 drone.known_tiles = self.central_strategist.world_model['known_tiles'].copy()
+                drone.threat_zones = self.central_strategist.world_model['potential_threat_zones'].copy()
 
         for command in commands_json['commands']:
             cmd_type = command.get('command_type')
@@ -616,8 +765,9 @@ class SimulationEngine:
                 drone_id = command.get('drone_id')
                 for drone in self.drones:
                     if drone.id == drone_id and drone.status == 'ACTIVE':
-                        # Known tiles bilgisini komuta ekle
+                        # Known tiles ve threat zones bilgisini komuta ekle
                         command['known_tiles'] = self.central_strategist.world_model['known_tiles'].copy()
+                        command['threat_zones'] = self.central_strategist.world_model['potential_threat_zones'].copy()
                         drone.set_command(command)
                         print(f"Komut verildi: {drone_id} -> {cmd_type}")
                         break
@@ -639,7 +789,7 @@ class SimulationEngine:
 
         # 1. Drone'ların Eylemleri - HER TICK
         for drone in self.drones:
-            drone.update()
+            drone.update(self.current_tick)
 
         # 2. Çevresel Kontroller (HSS) - HER TICK
         for drone in self.drones:
