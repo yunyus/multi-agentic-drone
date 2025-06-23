@@ -54,7 +54,7 @@ if ENABLE_VISUALIZATION:
     COLOR_DRONE = (0, 200, 255)
     COLOR_DRONE_DESTROYED = (150, 0, 0)
     COLOR_SCAN_AREA = (255, 255, 0, 50)
-    COLOR_KNOWN_WORLD = (0, 0, 255, 30) # Stratejistin bildiği alan
+    COLOR_KNOWN_WORLD = (0, 155, 0, 30) # Stratejistin bildiği alan
     COLOR_HSS_RANGE = (255, 100, 0, 60) 
 
 
@@ -84,7 +84,7 @@ class Grid:
                 self.tiles[x][y].type = 'BASE'
 
         # Engeller (azaltıldı)
-        for _ in range(int(self.width * self.height * 0.05)): # Haritanın %5'i engel olsun
+        for _ in range(int(self.width * self.height * 0.01)): # Haritanın %5'i engel olsun
             x, y = random.randint(0, self.width - 1), random.randint(0, self.height - 1)
             if self.tiles[x][y].type == 'EMPTY':
                 self.tiles[x][y].type = 'OBSTACLE'
@@ -569,18 +569,22 @@ class SimulationEngine:
         while not self.game_over:
             start_time = time.time()
             
+            # Her tick'te simülasyon adımını ilerlet
             self.tick()
             
+            # HER TICK'TE VİZUALİZASYON YAP
             if self.visualizer:
                 self.visualizer.draw()
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.game_over = True
                         self.game_over_message = "Kullanıcı simülasyonu kapattı."
+                # Görselleştirme yapıldığını göster
+                print(f"Görselleştirme güncellendi - Tick: {self.current_tick}")
 
             self.check_game_over()
             
-            # FPS'i ayarla
+            # FPS'i ayarla - her tick için
             elapsed = time.time() - start_time
             sleep_time = (1.0 / FPS) - elapsed
             if sleep_time > 0 and ENABLE_VISUALIZATION:
@@ -633,11 +637,11 @@ class SimulationEngine:
         self.current_tick += 1
         print(f"\n===== TICK: {self.current_tick} =====")
 
-        # 1. Drone'ların Eylemleri
+        # 1. Drone'ların Eylemleri - HER TICK
         for drone in self.drones:
             drone.update()
 
-        # 2. Çevresel Kontroller (HSS)
+        # 2. Çevresel Kontroller (HSS) - HER TICK
         for drone in self.drones:
             if drone.status == 'ACTIVE':
                 # Haritadaki tüm HSS'lere olan mesafesini kontrol et
@@ -658,9 +662,9 @@ class SimulationEngine:
                     if drone.status == 'DESTROYED':
                         break
 
-        # 3. Raporlama ve Planlama
-        # Her 5 tick'te bir planlama yap (API maliyetini düşürmek için)
+        # 3. Raporlama ve Planlama - SADECE HER 5 TICK'TE BİR
         if self.current_tick % 5 == 1:
+            print(f"*** RAPORLAMA VE LLM ÇAĞRISI YAPILIYOR - Tick: {self.current_tick} ***")
             # Raporları topla
             all_reports = []
             for drone in self.drones:
@@ -676,6 +680,9 @@ class SimulationEngine:
 
             # Yeni komutları al ve dağıt
             self._distribute_commands()
+            print(f"*** RAPORLAMA VE LLM ÇAĞRISI TAMAMLANDI - Tick: {self.current_tick} ***")
+        else:
+            print(f"Raporlama yok - Sadece drone hareketleri (Tick: {self.current_tick})")
         
     def check_game_over(self):
         # Başarı Koşulu
