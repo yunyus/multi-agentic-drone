@@ -121,95 +121,20 @@ class DroneAgent:
         return True
 
     def _find_path_to_target(self, target_x, target_y):
-        """LLM-assisted intelligent pathfinding algorithm."""
+        """HSS-aware pathfinding that avoids known danger zones."""
         start = (self.position['x'], self.position['y'])
         target = (target_x, target_y)
         
         if start == target:
             return []
         
-        # Get path planning strategy from LLM (at intervals)
-        current_tick = getattr(self, 'current_tick', 0)
-        should_consult_llm = (
-            current_tick - self.last_llm_consultation_tick > 10 or  # Every 10 ticks
-            len(self.threat_zones) > 0 or  # If threat zones exist
-            self._is_high_risk_area(target_x, target_y)  # If target is in risky area
-        )
+        # Simple HSS avoidance pathfinding
+        return self._bfs_pathfind_avoid_hss(target_x, target_y)
+
+    def _bfs_pathfind_avoid_hss(self, target_x, target_y):
+        """BFS pathfinding that avoids known HSS danger zones."""
+        from collections import deque
         
-        if should_consult_llm and not MOCK_LLM_RESPONSE:
-            path_strategy = self._consult_llm_for_path(target_x, target_y)
-            self.last_llm_consultation_tick = current_tick
-        else:
-            path_strategy = "DIRECT"  # Default strategy
-        
-        # Strategy-based pathfinding
-        if path_strategy == "AVOID_THREATS":
-            return self._find_safe_path(target_x, target_y)
-        elif path_strategy == "CAUTIOUS":
-            return self._find_cautious_path(target_x, target_y)
-        else:  # DIRECT
-            return self._find_direct_path(target_x, target_y)
-
-    def _consult_llm_for_path(self, target_x, target_y):
-        """Get path planning strategy consultation from LLM."""
-        situation = {
-            "drone_id": self.id,
-            "current_position": self.position,
-            "target_position": {"x": target_x, "y": target_y},
-            "battery": self.battery,
-            "known_obstacles": [{"x": x, "y": y} for (x, y), tile in self.known_tiles.items() if tile.get('type') == 'OBSTACLE'],
-            "threat_zones": self.threat_zones,
-            "scan_mode": self.scan_mode
-        }
-        
-        prompt = f"""
-You are a drone navigation AI. Your task is to choose the best path strategy to reach the target.
-
-SITUATION:
-{json.dumps(situation, indent=2)}
-
-STRATEGIES:
-1. DIRECT - Shortest path, ignore threat zones (risky but fast)
-2. AVOID_THREATS - Avoid all known threat zones (safe but longer)
-3. CAUTIOUS - Balance between safety and efficiency
-
-Consider:
-- Threat zones are areas where other drones were destroyed
-- Battery level (low battery = prefer shorter paths)
-- Known obstacles must always be avoided
-- Unknown areas might contain threats
-
-Respond with only ONE word: DIRECT, AVOID_THREATS, or CAUTIOUS
-"""
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Faster and cheaper model
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.1
-            )
-            strategy = response.choices[0].message.content.strip().upper()
-            print(f"{self.id} LLM strategy: {strategy}")
-            return strategy if strategy in ["DIRECT", "AVOID_THREATS", "CAUTIOUS"] else "DIRECT"
-        except Exception as e:
-            print(f"{self.id} LLM consultation error: {e}")
-            return "DIRECT"
-
-    def _find_direct_path(self, target_x, target_y):
-        """Shortest path (ignores threat zones)."""
-        return self._bfs_pathfind(target_x, target_y, avoid_threats=False)
-
-    def _find_safe_path(self, target_x, target_y):
-        """Safe path (avoids threat zones)."""
-        return self._bfs_pathfind(target_x, target_y, avoid_threats=True)
-
-    def _find_cautious_path(self, target_x, target_y):
-        """Balanced path (avoids getting close to threat zones)."""
-        return self._bfs_pathfind(target_x, target_y, avoid_threats=True, caution_radius=3)
-
-    def _bfs_pathfind(self, target_x, target_y, avoid_threats=False, caution_radius=0):
-        """BFS pathfinding with threat zone support."""
         start = (self.position['x'], self.position['y'])
         target = (target_x, target_y)
         
@@ -219,50 +144,35 @@ Respond with only ONE word: DIRECT, AVOID_THREATS, or CAUTIOUS
         directions = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]  # 8 directions
         
         while queue:
-            (x, y), path = queue.popleft()
+            (current_x, current_y), path = queue.popleft()
             
-            # Reached target?
-            if (x, y) == target:
-                return [{'x': px, 'y': py} for px, py in path]
+            if (current_x, current_y) == target:
+                # Convert path back to list of position dictionaries
+                return [{'x': x, 'y': y} for x, y in path]
             
-            # Stop if path gets too long (performance)
-            if len(path) > 60:  # Safe paths can be longer
-                continue
-            
-            # Check neighbors
             for dx, dy in directions:
-                next_x, next_y = x + dx, y + dy
+                next_x, next_y = current_x + dx, current_y + dy
+                
+                # Bounds check
+                if not (0 <= next_x < GRID_WIDTH and 0 <= next_y < GRID_HEIGHT):
+                    continue
                 
                 if (next_x, next_y) in visited:
-                    continue
-                    
-                # Map boundary check
-                if not (0 <= next_x < self.grid.width and 0 <= next_y < self.grid.height):
-                    continue
-                
-                tile = self.grid.get_tile(next_x, next_y)
-                if not tile:
                     continue
                 
                 # Check known obstacles
                 if self._is_known_obstacle(next_x, next_y):
                     continue
                 
-                # Threat zone check
-                if avoid_threats and self._is_in_threat_zone(next_x, next_y, caution_radius):
+                # Check HSS danger zones
+                if self._is_in_hss_danger_zone(next_x, next_y):
                     continue
                 
                 visited.add((next_x, next_y))
                 new_path = path + [(next_x, next_y)]
                 queue.append(((next_x, next_y), new_path))
         
-        # If safe path not found, try risky path
-        if avoid_threats:
-            print(f"{self.id} safe path not found, trying risky path...")
-            return self._bfs_pathfind(target_x, target_y, avoid_threats=False)
-        
-        # No path found
-        return []
+        return []  # No path found
 
     def _is_known_obstacle(self, x, y):
         """Checks known obstacles (known tiles only)."""
@@ -275,22 +185,30 @@ Respond with only ONE word: DIRECT, AVOID_THREATS, or CAUTIOUS
         # Unknown tiles are not obstacles (considered passable)
         return False
 
-    def _is_in_threat_zone(self, x, y, extra_radius=0):
-        """Checks if a coordinate is in a threat zone."""
+    def _is_in_hss_danger_zone(self, x, y):
+        """Check if position is within any known HSS danger zone."""
         for zone in self.threat_zones:
-            center = zone.get('center', {})
-            zone_radius = zone.get('radius', 10) + extra_radius
-            
-            # Euclidean distance
-            dist_sq = (x - center.get('x', 0))**2 + (y - center.get('y', 0))**2
-            if dist_sq <= zone_radius**2:
-                return True
+            if 'hss_location' in zone:
+                # Precise HSS location and radius
+                hss_x = zone['hss_location']['x']
+                hss_y = zone['hss_location']['y']
+                hss_radius = zone['radius']
+                
+                # Calculate distance from position to HSS
+                dist_sq = (x - hss_x)**2 + (y - hss_y)**2
+                if dist_sq <= hss_radius**2:
+                    return True
+            elif 'center' in zone:
+                # Fallback for old-style threat zones
+                center_x = zone['center']['x']
+                center_y = zone['center']['y']
+                radius = zone['radius']
+                
+                dist_sq = (x - center_x)**2 + (y - center_y)**2
+                if dist_sq <= radius**2:
+                    return True
+        
         return False
-
-    def _is_high_risk_area(self, x, y):
-        """Checks if target coordinate is in a high-risk area."""
-        # High risk if very close to threat zones
-        return self._is_in_threat_zone(x, y, extra_radius=5)
 
     def scan(self):
         self.scan_results = self.grid.get_visible_tiles(

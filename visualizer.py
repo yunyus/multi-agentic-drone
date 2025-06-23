@@ -26,21 +26,45 @@ class Visualizer:
         pygame.display.flip()
 
     def draw_grid(self):
-        # First draw HSS ranges so they stay under everything else
-        for x in range(GRID_WIDTH):
-            for y in range(GRID_HEIGHT):
-                tile = self.engine.grid.get_tile(x, y)
-                if tile.type == 'HSS':
-                    radius_in_pixels = tile.properties.get('kill_zone_radius', 5) * CELL_SIZE
-                    center_pixel_x = x * CELL_SIZE + CELL_SIZE // 2
-                    center_pixel_y = (GRID_HEIGHT - 1 - y) * CELL_SIZE + CELL_SIZE // 2
-                    
-                    # Create a surface to draw semi-transparent circle
-                    s = pygame.Surface((radius_in_pixels * 2, radius_in_pixels * 2), pygame.SRCALPHA)
-                    pygame.draw.circle(s, COLOR_HSS_RANGE, (radius_in_pixels, radius_in_pixels), radius_in_pixels)
-                    self.screen.blit(s, (center_pixel_x - radius_in_pixels, center_pixel_y - radius_in_pixels))
+        # First draw known HSS danger zones from strategist's world model
+        for zone in self.engine.central_strategist.world_model['potential_threat_zones']:
+            if 'hss_location' in zone:
+                # Draw precise HSS danger zone
+                hss_x = zone['hss_location']['x']
+                hss_y = zone['hss_location']['y']
+                hss_radius = zone['radius']
+                
+                radius_in_pixels = hss_radius * CELL_SIZE
+                center_pixel_x = hss_x * CELL_SIZE + CELL_SIZE // 2
+                center_pixel_y = (GRID_HEIGHT - 1 - hss_y) * CELL_SIZE + CELL_SIZE // 2
+                
+                # Create a surface to draw semi-transparent circle
+                s = pygame.Surface((radius_in_pixels * 2, radius_in_pixels * 2), pygame.SRCALPHA)
+                pygame.draw.circle(s, COLOR_HSS_RANGE, (radius_in_pixels, radius_in_pixels), radius_in_pixels)
+                self.screen.blit(s, (center_pixel_x - radius_in_pixels, center_pixel_y - radius_in_pixels))
+                
+                # Draw HSS center as a red X to mark discovered location
+                pygame.draw.line(self.screen, COLOR_HSS, 
+                               (center_pixel_x - CELL_SIZE//3, center_pixel_y - CELL_SIZE//3),
+                               (center_pixel_x + CELL_SIZE//3, center_pixel_y + CELL_SIZE//3), 3)
+                pygame.draw.line(self.screen, COLOR_HSS, 
+                               (center_pixel_x + CELL_SIZE//3, center_pixel_y - CELL_SIZE//3),
+                               (center_pixel_x - CELL_SIZE//3, center_pixel_y + CELL_SIZE//3), 3)
+            elif 'center' in zone:
+                # Draw old-style estimated threat zones
+                center_x = zone['center']['x']
+                center_y = zone['center']['y']
+                radius = zone['radius']
+                
+                radius_in_pixels = radius * CELL_SIZE
+                center_pixel_x = center_x * CELL_SIZE + CELL_SIZE // 2
+                center_pixel_y = (GRID_HEIGHT - 1 - center_y) * CELL_SIZE + CELL_SIZE // 2
+                
+                s = pygame.Surface((radius_in_pixels * 2, radius_in_pixels * 2), pygame.SRCALPHA)
+                pygame.draw.circle(s, (255, 200, 0, 80), (radius_in_pixels, radius_in_pixels), radius_in_pixels)
+                self.screen.blit(s, (center_pixel_x - radius_in_pixels, center_pixel_y - radius_in_pixels))
 
-        # Now draw other tiles
+        # Now draw other tiles (but NOT actual HSS positions - that would be cheating!)
         for x in range(GRID_WIDTH):
             for y in range(GRID_HEIGHT):
                 rect = pygame.Rect(x * CELL_SIZE, (GRID_HEIGHT - 1 - y) * CELL_SIZE, CELL_SIZE, CELL_SIZE)
@@ -53,11 +77,10 @@ class Visualizer:
                     pass
                 elif tile.type == 'TARGET':
                     color = COLOR_TARGET
-                # Make HSS center more visible too
-                elif tile.type == 'HSS':
-                    color = COLOR_HSS
+                # Don't draw HSS tiles - they should be invisible until discovered!
 
-                pygame.draw.rect(self.screen, color, rect, (1 if color == COLOR_EMPTY else 0))
+                if color != COLOR_EMPTY:
+                    pygame.draw.rect(self.screen, color, rect, (1 if color == COLOR_EMPTY else 0))
 
         # Draw base area last so it doesn't cover everything else
         for x in range(11):
@@ -91,11 +114,15 @@ class Visualizer:
 
     def draw_info(self):
         """Draws general information on screen."""
+        known_hss_count = len([zone for zone in self.engine.central_strategist.world_model['potential_threat_zones'] 
+                              if 'hss_location' in zone])
+        
         info_texts = [
             f"Tick: {self.engine.current_tick}",
             f"Missiles: {self.engine.missile_system.missile_count}",
             f"Active Drones: {sum(1 for d in self.engine.drones if d.status != 'DESTROYED')}/{NUM_DRONES}",
-            f"Remaining Targets: {sum(1 for row in self.engine.grid.tiles for tile in row if tile.type == 'TARGET')}"
+            f"Remaining Targets: {sum(1 for row in self.engine.grid.tiles for tile in row if tile.type == 'TARGET')}",
+            f"Discovered HSS: {known_hss_count}/{NUM_HSS}"
         ]
         
         for i, text in enumerate(info_texts):

@@ -41,10 +41,47 @@ class CentralStrategist:
                             "status": "CONFIRMED"
                         }
     
-    def add_threat_zone(self, position):
-        zone = {"center": position, "radius": 10, "confidence": "HIGH"}
-        self.world_model['potential_threat_zones'].append(zone)
-        print(f"STRATEGIST: New threat zone added: {position}")
+    def add_threat_zone(self, drone_position):
+        """Enhanced HSS detection: Precisely identify HSS location and radius when drone is destroyed."""
+        drone_x, drone_y = drone_position['x'], drone_position['y']
+        
+        # Find the actual HSS that killed the drone
+        for x in range(self.grid.width):
+            for y in range(self.grid.height):
+                tile = self.grid.get_tile(x, y)
+                if tile and tile.type == 'HSS':
+                    # Calculate distance from drone to HSS
+                    dist_sq = (drone_x - x)**2 + (drone_y - y)**2
+                    hss_radius = tile.properties.get('kill_zone_radius', 5)
+                    
+                    # If drone was within this HSS's kill zone, this is the HSS that killed it
+                    if dist_sq <= hss_radius**2:
+                        # Check if we already know about this HSS
+                        hss_already_known = False
+                        for zone in self.world_model['potential_threat_zones']:
+                            if ('hss_location' in zone and 
+                                zone['hss_location']['x'] == x and 
+                                zone['hss_location']['y'] == y):
+                                hss_already_known = True
+                                break
+                        
+                        if not hss_already_known:
+                            # Add precise HSS information to world model
+                            precise_hss_zone = {
+                                "hss_location": {"x": x, "y": y},
+                                "radius": hss_radius,
+                                "confidence": "CONFIRMED",
+                                "discovered_by_drone_loss": drone_position
+                            }
+                            self.world_model['potential_threat_zones'].append(precise_hss_zone)
+                            print(f"STRATEGIST: HSS DISCOVERED! Location: ({x},{y}), Radius: {hss_radius}, Drone lost at: ({drone_x},{drone_y})")
+                        
+                        return  # Found the HSS that killed the drone
+        
+        # If no HSS found (shouldn't happen), add general threat zone as fallback
+        print(f"STRATEGIST: Warning - Drone destroyed but no HSS found at {drone_position}")
+        fallback_zone = {"center": drone_position, "radius": 8, "confidence": "ESTIMATED"}
+        self.world_model['potential_threat_zones'].append(fallback_zone)
 
     def _format_state_for_llm(self, tick, drones, missile_system):
         """Converts current world model to JSON format for sending to LLM."""
