@@ -16,6 +16,14 @@ NUM_MOVING_ENEMIES = 2
 NUM_HSS = 4  # Hidden Air Defense Systems
 INITIAL_MISSILES = 5
 
+
+NUM_OBSTACLE_BLOCKS = 5  # Haritadaki engel kümesi sayısı (bu değeri değiştirerek yoğunluğu ayarlayabilirsiniz)
+MIN_BLOCK_WIDTH = 2
+MAX_BLOCK_WIDTH = 5
+MIN_BLOCK_HEIGHT = 2
+MAX_BLOCK_HEIGHT = 5
+
+
 TRUE_SCAN_PROBABILITY = 0.7
 
 # LLM Settings

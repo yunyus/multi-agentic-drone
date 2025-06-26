@@ -49,21 +49,69 @@ class SimulationEngine:
         self.current_tick += 1
         print(f"\n===== TICK: {self.current_tick} =====")
 
-        for drone in self.drones: drone.update(self.current_tick)
+        # 1. Düşmanlar hareket eder
         for enemy in self.moving_enemies: enemy.update(self.current_tick)
+        
+        # 2. Füzeler hareket eder
         for missile in self.active_missiles[:]:
             missile.update()
             if missile.status == 'DETONATED':
                 self.handle_missile_impact(missile)
                 self.active_missiles.remove(missile)
 
-        self.check_kamikaze_attacks()
-        self.check_hss_threats()
+        # 3. Dronelar hareket eder ve görevlerini yapar
+        for drone in self.drones: drone.update(self.current_tick)
+        
+        # 4. YENİ: Anlık avlanma ve çarpışma kontrolleri
+        self.check_and_initiate_hunts() # Düşman gören drone'lar av moduna geçer
+        self.check_kamikaze_attacks()  # Av başarıya ulaştı mı?
+        self.check_hss_threats()       # Drone HSS tarafından vuruldu mu?
         
         if self.current_tick % LLM_CALL_FREQUENCY == 1:
             reports = [d.report_to_center(self.moving_enemies) for d in self.drones]
             self.central_strategist.collect_reports(reports, self.current_tick)
             self._distribute_commands()
+
+    def check_and_initiate_hunts(self):
+        """Checks if any drone spots a moving enemy and initiates a hunt."""
+        active_enemies = [e for e in self.moving_enemies if e.status == 'ACTIVE']
+        for drone in self.drones:
+            if drone.status != 'ACTIVE': continue
+            
+            # Drone zaten bir ME avlamıyorsa...
+            if not drone.current_command.get('is_hunting'):
+                for enemy in active_enemies:
+                    dist_sq = (drone.position['x'] - enemy.position['x'])**2 + (drone.position['y'] - enemy.position['y'])**2
+                    # Eğer drone düşmanı tarama menzilinde gördüyse...
+                    if dist_sq <= DRONE_SCAN_RADIUS**2:
+                        print(f"!!! {drone.id} SPOTTED {enemy.id}! Overriding mission to HUNT! !!!")
+                        # LLM görevini ez ve yeni av görevini ver!
+                        hunt_command = {
+                            "command_type": "MOVE_DRONE",
+                            "target_position": enemy.position.copy(), # Düşmanın o anki konumunu hedefle
+                            "is_hunting": True # Bu bir av görevi
+                        }
+                        drone.set_command(hunt_command)
+                        break # Bu drone için av bulundu, diğer düşmanlara bakma
+
+            # Eğer drone zaten avlanıyorsa, hedefini güncel tut
+            elif drone.current_command.get('is_hunting'):
+                # Avladığı düşmanı bul
+                hunted_enemy = next((e for e in active_enemies if drone.target_position == e.position), None)
+                if not hunted_enemy: # Eğer düşman öldüyse veya menzilden çıktıysa yeni bir hedef bulalım
+                    # En yakındaki düşmanı hedefle
+                    closest_enemy = None
+                    min_dist_sq = float('inf')
+                    for enemy in active_enemies:
+                        dist_sq = (drone.position['x'] - enemy.position['x'])**2 + (drone.position['y'] - enemy.position['y'])**2
+                        if dist_sq < min_dist_sq:
+                            min_dist_sq = dist_sq
+                            closest_enemy = enemy
+                    
+                    if closest_enemy:
+                         # Hedefi güncelle
+                        drone.target_position = closest_enemy.position.copy()
+                        drone.path = [] # Yeni bir yol hesaplaması için yolu temizle
 
     def _distribute_commands(self):
         commands_json = self.central_strategist.plan_next_moves(
@@ -88,9 +136,20 @@ class SimulationEngine:
                         enhanced_command['known_tiles'] = known_tiles
                         drone.set_command(enhanced_command)
                         break
+                        
             elif cmd_type == 'FIRE_MISSILE':
                 target_pos = command.get('target_position')
-                if target_pos:
+                if not target_pos: continue
+                
+                # YENİ: Duplicate füze atışını engelleme
+                is_target_already_locked = False
+                for missile in self.active_missiles:
+                    if missile.target_position['x'] == target_pos['x'] and missile.target_position['y'] == target_pos['y']:
+                        is_target_already_locked = True
+                        print(f"ENGINE: Missile launch to {target_pos} aborted. A missile is already in flight to this target.")
+                        break
+                
+                if not is_target_already_locked:
                     missile = self.missile_system.fire(target_pos, self.central_strategist.world_model['known_tiles'])
                     if missile: self.active_missiles.append(missile)
 

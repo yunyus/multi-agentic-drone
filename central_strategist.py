@@ -161,6 +161,9 @@ Ana hedefin: Tüm düşmanları en az drone kaybıyla yok etmek. Öncelikli gör
 - **Pil Yönetimi:** Pili %25'in altına düşen drone'u üsse (`x:5, y:5` civarı) geri çağırmak için `MOVE_DRONE` komutu ver. Pil tasarrufu için üsse dönerken `SET_SCAN_MODE` ile modunu `'PASSIVE'` yapabilirsin. Üsteki drone'lara `STANDBY` komutu ver.
 - **Füze Disiplini:** Sadece `known_stationary_enemies` listesindeki hedeflere ateş et. `missiles_in_flight` listesini kontrol et.
 
+## 3. ZORLU HEDEFLER
+- Eğer bir drone hedefine yol bulamadığını raporlarsa (görevini iptal ederse), bu hedefin etrafı kapalı olabilir. O drone'a veya yakındaki başka bir drone'a, hedefin etrafındaki bilinmeyen bölgeleri keşfetmesi için yeni `MOVE_DRONE` görevleri ver. Amaç, hedefe yeni bir geçit bulmaktır.
+
 # BÖLÜM 4: ÖRNEK KOMUT AKIŞI
 "reasoning": "D-1 ve D-2'yi keşfe gönderiyorum. D-1'i kuzeye, D-2'yi doğuya yönlendiriyorum. Tarama modlarını ACTIVE yapıyorum. D-7'nin pili az, üsse dönüyor."
 "commands": [
