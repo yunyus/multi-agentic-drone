@@ -60,7 +60,7 @@ class SimulationEngine:
         self.check_kamikaze_attacks()
         self.check_hss_threats()
         
-        if self.current_tick % 5 == 1:
+        if self.current_tick % LLM_CALL_FREQUENCY == 1:
             reports = [d.report_to_center(self.moving_enemies) for d in self.drones]
             self.central_strategist.collect_reports(reports, self.current_tick)
             self._distribute_commands()
@@ -72,13 +72,21 @@ class SimulationEngine:
         if not commands_json or 'commands' not in commands_json: return
         print(f"\n--- TICK {self.current_tick} | Strategist Reasoning ---\n{commands_json.get('reasoning')}\n")
 
+        # Get current threat zones and known tiles from strategist
+        threat_zones = self.central_strategist.world_model['potential_threat_zones']
+        known_tiles = self.central_strategist.world_model['known_tiles']
+
         for command in commands_json['commands']:
             cmd_type = command.get('command_type')
             drone_id = command.get('drone_id')
             if cmd_type in ['MOVE_DRONE', 'SCAN_AREA', 'STANDBY', 'SET_SCAN_MODE']:
                 for drone in self.drones:
                     if drone.id == drone_id and drone.status == 'ACTIVE':
-                        drone.set_command(command)
+                        # Add threat zones and known tiles to every drone command
+                        enhanced_command = command.copy()
+                        enhanced_command['threat_zones'] = threat_zones
+                        enhanced_command['known_tiles'] = known_tiles
+                        drone.set_command(enhanced_command)
                         break
             elif cmd_type == 'FIRE_MISSILE':
                 target_pos = command.get('target_position')

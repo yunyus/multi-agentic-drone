@@ -8,8 +8,8 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 
 # Simulation Settings
-GRID_WIDTH = 100
-GRID_HEIGHT = 100
+GRID_WIDTH = 50
+GRID_HEIGHT = 50
 NUM_DRONES = 10
 NUM_STATIONARY_ENEMIES = 2
 NUM_MOVING_ENEMIES = 2
@@ -20,9 +20,11 @@ INITIAL_MISSILES = 5
 LLM_MODEL = "gpt-4o"
 # Set to True to skip API calls and use mock response for testing
 MOCK_LLM_RESPONSE = False 
+# How often (in ticks) the strategist calls the LLM for new commands
+LLM_CALL_FREQUENCY = 10
 
 # Drone Settings
-DRONE_BATTERY_MAX = 1000.0
+DRONE_BATTERY_MAX = 500.0
 DRONE_SCAN_RADIUS = 5
 DRONE_SPEED = 1.0 # tiles per tick
 COST_MOVE = 1.0
@@ -36,7 +38,7 @@ MISSILE_SPEED = 3.0 # tiles per tick
 
 # Visualization Settings (Pygame)
 ENABLE_VISUALIZATION = True
-CELL_SIZE = 8
+CELL_SIZE = 16
 FPS = 10  # Controls simulation speed
 
 # Colors
