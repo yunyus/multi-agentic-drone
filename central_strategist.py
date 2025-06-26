@@ -19,6 +19,9 @@ class CentralStrategist:
             "potential_threat_zones": []
         }
         self.current_tick = 0
+        # DRONE'LARIN SON GÖREVLERİNİ TAKİP ETMEK İÇİN YENİ BİR YAPI
+        self.drone_last_command_tick = {}
+
 
     def collect_reports(self, reports, current_tick):
         """Receives drone reports and updates world model."""
@@ -77,11 +80,17 @@ class CentralStrategist:
         
         drones_state = []
         for d in drones:
-            state = {"id": d.id, "status": d.status, "battery": round(d.battery, 2), "position": d.position}
+            state = {
+                "id": d.id, 
+                "status": d.status, 
+                "battery": round(d.battery, 2), 
+                "position": d.position,
+                # LLM'e hangi drone'un ne kadar süredir boşta olduğunu söyleyelim
+                "ticks_since_last_command": tick - self.drone_last_command_tick.get(d.id, 0)
+            }
             if d.status == 'DESTROYED': state["last_known_position"] = d.position
             drones_state.append(state)
 
-        # Add information about missiles currently in flight
         missiles_in_flight = []
         for missile in active_missiles:
             if missile.status == 'IN_FLIGHT':
@@ -91,16 +100,27 @@ class CentralStrategist:
                     "eta_ticks": len(missile.path) // missile.speed + (1 if len(missile.path) % missile.speed else 0)
                 })
 
+        # BİLİNEN DÜNYANIN SINIRLARINI HESAPLAYALIM
+        known_x = [pos[0] for pos in self.world_model['known_tiles'].keys()]
+        known_y = [pos[1] for pos in self.world_model['known_tiles'].keys()]
+        map_boundaries = {
+            "min_x": min(known_x) if known_x else 0,
+            "max_x": max(known_x) if known_x else 0,
+            "min_y": min(known_y) if known_y else 0,
+            "max_y": max(known_y) if known_y else 0,
+        }
+
         return {
             "tick": tick,
-            "mission_objective": "Destroy all stationary (SE) and moving (ME) enemies. Use missiles for SE, and drone kamikaze attacks for ME.",
+            "mission_objective": "Tüm sabit (SE) ve hareketli (ME) düşmanları yok et. SE'ler için füze, ME'ler için drone kamikaze saldırısı kullan.",
             "resources": {"missiles_left": missile_system.missile_count},
             "drones": drones_state,
             "missiles_in_flight": missiles_in_flight,
             "known_world": {
                 "grid_size": self.world_model['grid_size'],
                 "base_location": self.world_model['base_location'],
-                "known_obstacles": known_obstacles,
+                "map_boundaries_explored": map_boundaries, # LLM'E YENİ BİLGİ
+                "known_obstacles_count": len(known_obstacles), # Detay yerine özet verelim
                 "known_stationary_enemies": known_stationary_list,
                 "known_moving_enemies": known_moving_list,
                 "potential_threat_zones": self.world_model['potential_threat_zones']
@@ -111,45 +131,69 @@ class CentralStrategist:
         """Sends request to LLM and parses returned commands."""
         world_state = self._format_state_for_llm(current_tick, drones, missile_system, moving_enemies, active_missiles)
         
+        # =================================================================
+        # YENİ VE GÜÇLENDİRİLMİŞ SYSTEM PROMPT
+        # =================================================================
         system_prompt = """
-# ROLE AND GOAL
-You are "Stratejist", a central command AI for a drone swarm. Your mission is to destroy all enemies.
+# BÖLÜM 1: ROL VE ANA HEDEF
+Sen, bir drone sürüsünü yöneten "Stratejist" adlı merkezi komuta yapay zekasısın.
+Ana hedefin: Tüm düşmanları en az drone kaybıyla yok etmek. Öncelikli görevin haritayı hızla açarak tüm düşmanların yerini tespit etmektir.
 
-# ENEMY TYPES & RULES OF ENGAGEMENT
-1.  **Stationary Enemies (SE):** Fixed targets. Destroy ONLY with `FIRE_MISSILE`.
-2.  **Moving Enemies (ME):** Mobile targets. Destroy ONLY by sending a drone to their exact location for a kamikaze attack (`MOVE_DRONE`). When a drone and ME are on the same tile, they are both destroyed automatically.
+# BÖLÜM 2: TEMEL KOMUTLAR VE ANLAMLARI
+- `MOVE_DRONE`: Bir drone'u hedefe hareket ettirir. **TEK BAŞINA TARAMA YAPMAZ.**
+- `SET_SCAN_MODE`: Bir drone'un tarama modunu değiştirir. Bu, bilgi toplamanın anahtarıdır.
+  - `scan_mode: 'ACTIVE'`: Drone hareket ederken periyodik olarak çevresini tarar ve raporlar. **Keşif için ZORUNLUDUR.** Pil tüketir.
+  - `scan_mode: 'PASSIVE'`: Drone sadece hareket eder, tarama yapmaz. Pil tasarrufu için kullanılır.
+- `FIRE_MISSILE`: Sabit hedeflere füze ateşler.
+- `STANDBY`: Drone'u beklemeye alır. Üsteyken şarj olmasını sağlar.
 
-# STRATEGY & RULES
-1.  **Missile Attacks:** Use `FIRE_MISSILE` on `known_stationary_enemies`. Missiles use safe paths based on known tiles.
-2.  **Kamikaze Attacks:** Use `MOVE_DRONE` to hunt `known_moving_enemies`. Since they move, their position data can be stale. You might need to send drones to their last known position to find them again.
-3.  **Exploration:** Spread drones out to explore the map and find all enemies. Use `scan_mode: 'ACTIVE'` for explorers.
-4.  **Resource Management:** Drones have limited battery and must return to base (0,0 to 10,10) to recharge.
-5.  **CRITICAL - HSS AVOIDANCE:** Drones will AUTOMATICALLY avoid `potential_threat_zones` (HSS kill zones) when pathfinding. You can safely send drones anywhere - they will find safe routes around known HSS zones. However, avoid sending multiple drones to the same general area where HSS threats exist to minimize risk.
-6.  **CRITICAL - NO DUPLICATE MISSILES:** Check `missiles_in_flight` before firing. NEVER fire at coordinates that already have a missile heading toward them! Each missile is precious.
-7.  **Response Format:** You MUST respond with a single valid JSON object.
+# BÖLÜM 3: STRATEJİK PRENSİPLER (EN ÖNEMLİ BÖLÜM)
 
-# OUTPUT FORMAT
-{
-  "reasoning": "<Your brief strategic thought process>",
-  "commands": [
-    {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 55, "y": 60}},
-    {"command_type": "FIRE_MISSILE", "target_position": {"x": 80, "y": 20}},
-    {"command_type": "SCAN_AREA", "drone_id": "D-3"},
-    {"command_type": "SET_SCAN_MODE", "drone_id": "D-4", "scan_mode": "ACTIVE"},
-    {"command_type": "STANDBY", "drone_id": "D-5"}
-  ]
-}
+## 1. KEŞİF STRATEJİSİ: İKİ ADIMLI KOMUT
+- **KURAL:** Bir drone'u keşfe göndermek için **MUTLAKA İKİ KOMUT** kullanmalısın:
+  1.  `{"command_type": "SET_SCAN_MODE", "drone_id": "D-X", "scan_mode": "ACTIVE"}`
+  2.  `{"command_type": "MOVE_DRONE", "drone_id": "D-X", "target_position": {"x": Y, "y": Z}}`
+- **YÖNTEM: SINIRLARI ZORLA!** Boşta olan her AKTİF drone'a, **BİLİNEN DÜNYANIN SINIRINA (`map_boundaries_explored`) doğru** yeni bir keşif hedefi ver.
+- **TIKANIKLIĞI ÖNLE:** Drone'ları farklı yönlere (örn: biri kuzeydoğuya, diğeri güneybatıya) göndererek yelpaze gibi açılmalarını sağla. İki drone'a çok yakın keşif hedefleri VERME.
+- **SÜREKLİLİK:** Bir drone keşif hedefine ulaştığında, ona **hemen** yeni bir `MOVE_DRONE` hedefi ver. Zaten 'ACTIVE' modda olduğu için tekrar `SET_SCAN_MODE` demene gerek yok.
 
-Analyze the world state and generate commands.
-        """
+## 2. KAYNAK YÖNETİMİ
+- **Pil Yönetimi:** Pili %25'in altına düşen drone'u üsse (`x:5, y:5` civarı) geri çağırmak için `MOVE_DRONE` komutu ver. Pil tasarrufu için üsse dönerken `SET_SCAN_MODE` ile modunu `'PASSIVE'` yapabilirsin. Üsteki drone'lara `STANDBY` komutu ver.
+- **Füze Disiplini:** Sadece `known_stationary_enemies` listesindeki hedeflere ateş et. `missiles_in_flight` listesini kontrol et.
 
-        if MOCK_LLM_RESPONSE:
-            return {"reasoning": "Mock: Sending D-1 to explore, D-2 to hunt a moving enemy.",
-                    "commands": [
-                        {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 75, "y": 75}},
-                        {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 75, "y": 25}}
-                    ]}
+# BÖLÜM 4: ÖRNEK KOMUT AKIŞI
+"reasoning": "D-1 ve D-2'yi keşfe gönderiyorum. D-1'i kuzeye, D-2'yi doğuya yönlendiriyorum. Tarama modlarını ACTIVE yapıyorum. D-7'nin pili az, üsse dönüyor."
+"commands": [
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-1", "scan_mode": "ACTIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 25, "y": 45}},
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-2", "scan_mode": "ACTIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 45, "y": 25}},
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-7", "scan_mode": "PASSIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-7", "target_position": {"x": 5, "y": 5}}
+]
 
+# BÖLÜM 5: ÇIKTI FORMATI
+- Cevabın TEK BİR GEÇERLİ JSON objesi olmalıdır. Her aktif ve görevi olmayan drone için komut oluştur.
+"""
+
+        # Drone'lara komut verildiğinde tick'i kaydet
+        if not MOCK_LLM_RESPONSE:
+            response_json = self._get_llm_response(system_prompt, world_state)
+        else:
+            response_json = {"reasoning": "Mock: Sending D-1 to explore NE, D-2 to explore SW.",
+                             "commands": [
+                                 {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 45, "y": 45}},
+                                 {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 5, "y": 35}}
+                             ]}
+        
+        if response_json and 'commands' in response_json:
+            for cmd in response_json['commands']:
+                if 'drone_id' in cmd:
+                    self.drone_last_command_tick[cmd['drone_id']] = self.current_tick
+        
+        return response_json
+
+    def _get_llm_response(self, system_prompt, world_state):
         print("Strategist thinking... (Making LLM API call)")
         try:
             response = self.client.chat.completions.create(

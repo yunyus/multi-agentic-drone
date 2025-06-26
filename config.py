@@ -16,6 +16,8 @@ NUM_MOVING_ENEMIES = 2
 NUM_HSS = 4  # Hidden Air Defense Systems
 INITIAL_MISSILES = 5
 
+TRUE_SCAN_PROBABILITY = 0.7
+
 # LLM Settings
 LLM_MODEL = "gpt-4o"
 # Set to True to skip API calls and use mock response for testing

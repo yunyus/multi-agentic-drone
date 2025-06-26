@@ -82,7 +82,7 @@ class DroneAgent:
             if tile and tile.type != 'OBSTACLE':
                 self.position = next_pos
                 self.battery -= COST_MOVE
-                if self.scan_mode == 'ACTIVE' and random.random() < 0.3:
+                if self.scan_mode == 'ACTIVE' and random.random() < TRUE_SCAN_PROBABILITY:
                     self.scan()
             else:
                 print(f"{self.id} hit unknown obstacle at ({next_pos['x']},{next_pos['y']}), recalculating.")
