@@ -1,3 +1,4 @@
+# FILE: grid.py
 import random
 from config import *
 
@@ -6,7 +7,7 @@ class Tile:
     def __init__(self, x, y, tile_type='EMPTY', properties=None):
         self.x = x
         self.y = y
-        self.type = tile_type  # 'EMPTY', 'OBSTACLE', 'BASE', 'TARGET', 'HSS'
+        self.type = tile_type  # 'EMPTY', 'OBSTACLE', 'BASE', 'STATIONARY_ENEMY', 'HSS'
         self.properties = properties if properties else {}
         self.is_known_by_strategist = False
 
@@ -24,19 +25,41 @@ class Grid:
             for y in range(11):
                 self.tiles[x][y].type = 'BASE'
 
-        # Obstacles (reduced)
-        for _ in range(int(self.width * self.height * 0.05)):  # 5% of map as obstacles
-            x, y = random.randint(0, self.width - 1), random.randint(0, self.height - 1)
-            if self.tiles[x][y].type == 'EMPTY':
-                self.tiles[x][y].type = 'OBSTACLE'
+        for _ in range(NUM_OBSTACLE_BLOCKS):
+            # Engel bloğunun boyutlarını rastgele belirle
+            block_width = random.randint(MIN_BLOCK_WIDTH, MAX_BLOCK_WIDTH)
+            block_height = random.randint(MIN_BLOCK_HEIGHT, MAX_BLOCK_HEIGHT)
+            
+            # Engel bloğunun sol alt köşesi için rastgele bir başlangıç noktası seç.
+            # Üs bölgesinin (0-10, 0-10) ve harita sınırlarının dışına taşmamasına dikkat et.
+            # Üs bölgesine çok yakın başlamasını engellemek için başlangıç koordinatlarını 11'den başlatabiliriz.
+            start_x = random.randint(11, self.width - block_width - 1)
+            start_y = random.randint(11, self.height - block_height - 1)
+            
+            # Belirlenen alandaki tüm tile'ları 'OBSTACLE' olarak işaretle
+            is_valid_location = True
+            # Yerleştirmeden önce alanın boş olup olmadığını kontrol et (opsiyonel ama iyi bir pratik)
+            for x in range(start_x, start_x + block_width):
+                for y in range(start_y, start_y + block_height):
+                    if self.tiles[x][y].type != 'EMPTY':
+                        is_valid_location = False
+                        break
+                if not is_valid_location:
+                    break
+            
+            # Eğer alan müsaitse, engelleri yerleştir
+            if is_valid_location:
+                for x in range(start_x, start_x + block_width):
+                    for y in range(start_y, start_y + block_height):
+                        self.tiles[x][y].type = 'OBSTACLE'
         
-        # Targets
-        for i in range(NUM_TARGETS):
+        # Stationary Enemies
+        for i in range(NUM_STATIONARY_ENEMIES):
             while True:
                 x, y = random.randint(0, self.width - 1), random.randint(0, self.height - 1)
                 if self.tiles[x][y].type == 'EMPTY':
-                    self.tiles[x][y].type = 'TARGET'
-                    self.tiles[x][y].properties = {"target_id": f"Hedef-{i+1}", "status": "ACTIVE"}
+                    self.tiles[x][y].type = 'STATIONARY_ENEMY'
+                    self.tiles[x][y].properties = {"enemy_id": f"SE-{i+1}", "status": "ACTIVE"}
                     break
         
         # HSS (Hidden Air Defense Systems)
@@ -95,4 +118,4 @@ class Grid:
                 if not is_blocked:
                     visible_tiles.append(self.get_tile(target_x, target_y))
 
-        return visible_tiles 
+        return visible_tiles

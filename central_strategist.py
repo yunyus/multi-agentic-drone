@@ -1,182 +1,203 @@
+# FILE: central_strategist.py
 import openai
 import json
 from config import *
 
 class CentralStrategist:
-    """Collects information from all drones, makes plans with GPT-4o and sends commands."""
+    """Collects information, makes plans with GPT-4o and sends commands."""
     def __init__(self, grid):
         self.llm_api_key = API_KEY
         self.llm_model = LLM_MODEL
         self.client = openai.OpenAI(api_key=self.llm_api_key)
         self.grid = grid
-        # World model: Everything the strategist knows is stored here
         self.world_model = {
             "grid_size": {"width": GRID_WIDTH, "height": GRID_HEIGHT},
             "base_location": {"x_range": [0, 10], "y_range": [0, 10]},
-            "known_tiles": {},  # (x, y) -> Tile
-            "known_targets": {},  # target_id -> {"position": ..., "status": ...}
-            "potential_threat_zones": []  # HSS suspicions
+            "known_tiles": {},
+            "known_stationary_enemies": {},
+            "known_moving_enemies": {},
+            "potential_threat_zones": []
         }
+        self.current_tick = 0
+        # DRONE'LARIN SON GÖREVLERİNİ TAKİP ETMEK İÇİN YENİ BİR YAPI
+        self.drone_last_command_tick = {}
 
-    def collect_reports(self, reports):
+
+    def collect_reports(self, reports, current_tick):
         """Receives drone reports and updates world model."""
+        self.current_tick = current_tick
         for report in reports:
             if not report: continue
-            # Process scan results
+            
+            # Process tile scan results
             for tile_data in report['scan_results']:
                 x, y = tile_data['position']['x'], tile_data['position']['y']
-                
-                # Add to world model
-                if (x,y) not in self.world_model['known_tiles']:
-                     self.world_model['known_tiles'][(x,y)] = tile_data
-
+                self.world_model['known_tiles'][(x,y)] = tile_data
                 self.grid.get_tile(x, y).is_known_by_strategist = True
 
-                if tile_data['type'] == 'TARGET':
-                    target_id = tile_data['properties']['target_id']
-                    if target_id not in self.world_model['known_targets']:
-                        print(f"STRATEGIST: New target found! {target_id} at ({x},{y})")
-                        self.world_model['known_targets'][target_id] = {
-                            "position": tile_data['position'],
-                            "status": "CONFIRMED"
+                if tile_data['type'] == 'STATIONARY_ENEMY':
+                    enemy_id = tile_data['properties']['enemy_id']
+                    if enemy_id not in self.world_model['known_stationary_enemies']:
+                        print(f"STRATEGIST: New stationary enemy {enemy_id} found at ({x},{y})")
+                        self.world_model['known_stationary_enemies'][enemy_id] = {
+                            "position": tile_data['position'], "status": "CONFIRMED"
                         }
-    
+            
+            # Process spotted moving enemies
+            for enemy_data in report.get('spotted_enemies', []):
+                enemy_id = enemy_data['id']
+                if enemy_id not in self.world_model['known_moving_enemies']:
+                     print(f"STRATEGIST: New moving enemy {enemy_id} spotted at {enemy_data['position']}")
+                self.world_model['known_moving_enemies'][enemy_id] = {
+                    "position": enemy_data['position'],
+                    "last_seen_tick": self.current_tick
+                }
+
     def add_threat_zone(self, drone_position):
-        """Enhanced HSS detection: Precisely identify HSS location and radius when drone is destroyed."""
-        drone_x, drone_y = drone_position['x'], drone_position['y']
-        
-        # Find the actual HSS that killed the drone
+        """Identifies HSS location and radius when a drone is destroyed."""
+        # This logic remains the same as it correctly identifies HSS threats
         for x in range(self.grid.width):
             for y in range(self.grid.height):
                 tile = self.grid.get_tile(x, y)
                 if tile and tile.type == 'HSS':
-                    # Calculate distance from drone to HSS
-                    dist_sq = (drone_x - x)**2 + (drone_y - y)**2
+                    dist_sq = (drone_position['x'] - x)**2 + (drone_position['y'] - y)**2
                     hss_radius = tile.properties.get('kill_zone_radius', 5)
-                    
-                    # If drone was within this HSS's kill zone, this is the HSS that killed it
                     if dist_sq <= hss_radius**2:
-                        # Check if we already know about this HSS
-                        hss_already_known = False
-                        for zone in self.world_model['potential_threat_zones']:
-                            if ('hss_location' in zone and 
-                                zone['hss_location']['x'] == x and 
-                                zone['hss_location']['y'] == y):
-                                hss_already_known = True
-                                break
-                        
-                        if not hss_already_known:
-                            # Add precise HSS information to world model
-                            precise_hss_zone = {
-                                "hss_location": {"x": x, "y": y},
-                                "radius": hss_radius,
-                                "confidence": "CONFIRMED",
-                                "discovered_by_drone_loss": drone_position
-                            }
-                            self.world_model['potential_threat_zones'].append(precise_hss_zone)
-                            print(f"STRATEGIST: HSS DISCOVERED! Location: ({x},{y}), Radius: {hss_radius}, Drone lost at: ({drone_x},{drone_y})")
-                        
-                        return  # Found the HSS that killed the drone
-        
-        # If no HSS found (shouldn't happen), add general threat zone as fallback
-        print(f"STRATEGIST: Warning - Drone destroyed but no HSS found at {drone_position}")
-        fallback_zone = {"center": drone_position, "radius": 8, "confidence": "ESTIMATED"}
-        self.world_model['potential_threat_zones'].append(fallback_zone)
+                        is_known = any(z.get('hss_location') == {'x': x, 'y': y} for z in self.world_model['potential_threat_zones'])
+                        if not is_known:
+                            self.world_model['potential_threat_zones'].append({
+                                "hss_location": {"x": x, "y": y}, "radius": hss_radius, "confidence": "CONFIRMED"
+                            })
+                            print(f"STRATEGIST: HSS DISCOVERED! Location: ({x},{y}), Radius: {hss_radius}")
+                        return
+        print(f"STRATEGIST: Warning - Drone lost but no HSS found at {drone_position}")
 
-    def _format_state_for_llm(self, tick, drones, missile_system):
-        """Converts current world model to JSON format for sending to LLM."""
+    def _format_state_for_llm(self, tick, drones, missile_system, moving_enemies, active_missiles):
+        """Converts current world model to JSON for the LLM."""
+        known_obstacles = [{'x': x, 'y': y} for (x,y), tile in self.world_model['known_tiles'].items() if tile['type'] == 'OBSTACLE']
+        known_stationary_list = [{"id": eid, **edata} for eid, edata in self.world_model['known_stationary_enemies'].items()]
+        known_moving_list = [{"id": eid, **edata} for eid, edata in self.world_model['known_moving_enemies'].items()]
         
-        # Process known obstacles and targets
-        known_obstacles = []
-        for (x,y), tile in self.world_model['known_tiles'].items():
-            if tile['type'] == 'OBSTACLE':
-                known_obstacles.append({'x': x, 'y': y})
-        
-        known_targets_list = [
-            {"id": tid, **tdata} for tid, tdata in self.world_model['known_targets'].items()
-        ]
-
         drones_state = []
         for d in drones:
-            state = {"id": d.id, "status": d.status, "battery": round(d.battery, 2), "scan_mode": d.scan_mode}
-            if d.status == 'DESTROYED':
-                state["last_known_position"] = d.position
-            else:
-                state["position"] = d.position
+            state = {
+                "id": d.id, 
+                "status": d.status, 
+                "battery": round(d.battery, 2), 
+                "position": d.position,
+                # LLM'e hangi drone'un ne kadar süredir boşta olduğunu söyleyelim
+                "ticks_since_last_command": tick - self.drone_last_command_tick.get(d.id, 0)
+            }
+            if d.status == 'DESTROYED': state["last_known_position"] = d.position
             drones_state.append(state)
 
-        state_json = {
+        missiles_in_flight = []
+        for missile in active_missiles:
+            if missile.status == 'IN_FLIGHT':
+                missiles_in_flight.append({
+                    "target_position": missile.target_position,
+                    "current_position": missile.current_position,
+                    "eta_ticks": len(missile.path) // missile.speed + (1 if len(missile.path) % missile.speed else 0)
+                })
+
+        # BİLİNEN DÜNYANIN SINIRLARINI HESAPLAYALIM
+        known_x = [pos[0] for pos in self.world_model['known_tiles'].keys()]
+        known_y = [pos[1] for pos in self.world_model['known_tiles'].keys()]
+        map_boundaries = {
+            "min_x": min(known_x) if known_x else 0,
+            "max_x": max(known_x) if known_x else 0,
+            "min_y": min(known_y) if known_y else 0,
+            "max_y": max(known_y) if known_y else 0,
+        }
+
+        return {
             "tick": tick,
-            "mission_objective": "Destroy all 3 targets. Minimize drone losses by avoiding unknown HSS.",
-            "resources": {
-                "missiles_left": missile_system.missile_count
-            },
+            "mission_objective": "Tüm sabit (SE) ve hareketli (ME) düşmanları yok et. SE'ler için füze, ME'ler için drone kamikaze saldırısı kullan.",
+            "resources": {"missiles_left": missile_system.missile_count},
             "drones": drones_state,
+            "missiles_in_flight": missiles_in_flight,
             "known_world": {
                 "grid_size": self.world_model['grid_size'],
                 "base_location": self.world_model['base_location'],
-                "known_obstacles": known_obstacles,
-                "known_targets": known_targets_list,
+                "map_boundaries_explored": map_boundaries, # LLM'E YENİ BİLGİ
+                "known_obstacles_count": len(known_obstacles), # Detay yerine özet verelim
+                "known_stationary_enemies": known_stationary_list,
+                "known_moving_enemies": known_moving_list,
                 "potential_threat_zones": self.world_model['potential_threat_zones']
             }
         }
-        return state_json
 
-    def plan_next_moves(self, current_tick, drones, missile_system):
+    def plan_next_moves(self, current_tick, drones, missile_system, moving_enemies, active_missiles):
         """Sends request to LLM and parses returned commands."""
-        world_state = self._format_state_for_llm(current_tick, drones, missile_system)
+        world_state = self._format_state_for_llm(current_tick, drones, missile_system, moving_enemies, active_missiles)
         
+        # =================================================================
+        # YENİ VE GÜÇLENDİRİLMİŞ SYSTEM PROMPT
+        # =================================================================
         system_prompt = """
-# ROLE AND GOAL
-You are "Stratejist", a central command AI for a swarm of 10 autonomous drones. Your mission is to explore a 100x100 grid map, identify all 3 enemy targets, and destroy them using a limited supply of 5 missiles. You must achieve this while minimizing drone losses to hidden Hostile Air Defense Systems (HSS).
+# BÖLÜM 1: ROL VE ANA HEDEF
+Sen, bir drone sürüsünü yöneten "Stratejist" adlı merkezi komuta yapay zekasısın.
+Ana hedefin: Tüm düşmanları en az drone kaybıyla yok etmek. Öncelikli görevin haritayı hızla açarak tüm düşmanların yerini tespit etmektir.
 
-# RULES
-1.  **Map:** The map is a 100x100 grid. (0,0) is the bottom-left. Your base is at (0,0) to (10,10).
-2.  **Drones:** Drones consume battery for every action. They can recharge at the Base. Send them to base if battery is low (e.g., < 200). Drones that reach their target position will automatically go into STANDBY. Give them a new task.
-3.  **Threats (HSS):** HSSs are stationary and invisible. If a drone is destroyed, its last known position is a strong clue to a HSS location. Assume HSS kill zones are circular. Mark that area as a threat and avoid it.
-4.  **Strategy:** Initially, spread your drones out to explore different quadrants of the map. Set drone scan_mode to 'ACTIVE' for exploration drones and 'PASSIVE' for strategic drones. ACTIVE drones will automatically scan when they reach destinations and occasionally while moving.
-5.  **Commands:** You can issue 'MOVE_DRONE', 'SCAN_AREA', 'SET_SCAN_MODE', 'FIRE_MISSILE', or 'STANDBY'. You can also set scan_mode='ACTIVE' or 'PASSIVE' for each drone to control their scanning behavior.
-6.  **CRITICAL - MISSILE TARGETING:** ONLY fire missiles at coordinates where you have CONFIRMED targets in the known_targets list. NEVER fire at coordinates you haven't scanned or where targets are uncertain. Each missile is precious - you only have 5 total!
-7.  **Communication:** You receive a JSON object with the current world state. You MUST respond with a single valid JSON object containing your reasoning and a list of commands. Do not output any other text or formatting.
+# BÖLÜM 2: TEMEL KOMUTLAR VE ANLAMLARI
+- `MOVE_DRONE`: Bir drone'u hedefe hareket ettirir. **TEK BAŞINA TARAMA YAPMAZ.**
+- `SET_SCAN_MODE`: Bir drone'un tarama modunu değiştirir. Bu, bilgi toplamanın anahtarıdır.
+  - `scan_mode: 'ACTIVE'`: Drone hareket ederken periyodik olarak çevresini tarar ve raporlar. **Keşif için ZORUNLUDUR.** Pil tüketir.
+  - `scan_mode: 'PASSIVE'`: Drone sadece hareket eder, tarama yapmaz. Pil tasarrufu için kullanılır.
+- `FIRE_MISSILE`: Sabit hedeflere füze ateşler.
+- `STANDBY`: Drone'u beklemeye alır. Üsteyken şarj olmasını sağlar.
 
-# INPUT FORMAT (World State JSON)
-You will receive a JSON object with the structure you are about to see.
+# BÖLÜM 3: STRATEJİK PRENSİPLER (EN ÖNEMLİ BÖLÜM)
 
-# OUTPUT FORMAT (Your Command JSON)
-Your response MUST be a single JSON object in this exact format:
-{
-  "reasoning": "<Your brief strategic thought process for this turn>",
-  "commands": [
-    { "command_type": "MOVE_DRONE", "drone_id": "<drone_id>", "target_position": {"x": <int>, "y": <int>} },
-    { "command_type": "SCAN_AREA", "drone_id": "<drone_id>" },
-    { "command_type": "SET_SCAN_MODE", "drone_id": "<drone_id>", "scan_mode": "ACTIVE" },
-    { "command_type": "SET_SCAN_MODE", "drone_id": "<drone_id>", "scan_mode": "PASSIVE" },
-    { "command_type": "FIRE_MISSILE", "target_position": {"x": <int>, "y": <int>} },
-    { "command_type": "STANDBY", "drone_id": "<drone_id>", "reason": "<optional reason>" }
-  ]
-}
+## 1. KEŞİF STRATEJİSİ: İKİ ADIMLI KOMUT
+- **KURAL:** Bir drone'u keşfe göndermek için **MUTLAKA İKİ KOMUT** kullanmalısın:
+  1.  `{"command_type": "SET_SCAN_MODE", "drone_id": "D-X", "scan_mode": "ACTIVE"}`
+  2.  `{"command_type": "MOVE_DRONE", "drone_id": "D-X", "target_position": {"x": Y, "y": Z}}`
+- **YÖNTEM: SINIRLARI ZORLA!** Boşta olan her AKTİF drone'a, **BİLİNEN DÜNYANIN SINIRINA (`map_boundaries_explored`) doğru** yeni bir keşif hedefi ver.
+- **TIKANIKLIĞI ÖNLE:** Drone'ları farklı yönlere (örn: biri kuzeydoğuya, diğeri güneybatıya) göndererek yelpaze gibi açılmalarını sağla. İki drone'a çok yakın keşif hedefleri VERME.
+- **SÜREKLİLİK:** Bir drone keşif hedefine ulaştığında, ona **hemen** yeni bir `MOVE_DRONE` hedefi ver. Zaten 'ACTIVE' modda olduğu için tekrar `SET_SCAN_MODE` demene gerek yok.
 
-Now, analyze the provided world state and generate the commands for the next tick.
-        """
+## 2. KAYNAK YÖNETİMİ
+- **Pil Yönetimi:** Pili %25'in altına düşen drone'u üsse (`x:5, y:5` civarı) geri çağırmak için `MOVE_DRONE` komutu ver. Pil tasarrufu için üsse dönerken `SET_SCAN_MODE` ile modunu `'PASSIVE'` yapabilirsin. Üsteki drone'lara `STANDBY` komutu ver.
+- **Füze Disiplini:** Sadece `known_stationary_enemies` listesindeki hedeflere ateş et. `missiles_in_flight` listesini kontrol et.
 
-        if MOCK_LLM_RESPONSE:
-            print("--- USING MOCK LLM ---")
-            mock_response = {
-                "reasoning": "This is a mock response. Sending D-1 and D-2 in ACTIVE scan mode for exploration, D-3 and D-4 for manual scanning.",
-                "commands": [
-                    {"command_type": "SET_SCAN_MODE", "drone_id": "D-1", "scan_mode": "ACTIVE"},
-                    {"command_type": "SET_SCAN_MODE", "drone_id": "D-2", "scan_mode": "ACTIVE"},
-                    {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 25, "y": 75}},
-                    {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 75, "y": 75}},
-                    {"command_type": "SCAN_AREA", "drone_id": "D-3"},
-                    {"command_type": "SCAN_AREA", "drone_id": "D-4"}
-                ]
-            }
-            return mock_response
+## 3. ZORLU HEDEFLER
+- Eğer bir drone hedefine yol bulamadığını raporlarsa (görevini iptal ederse), bu hedefin etrafı kapalı olabilir. O drone'a veya yakındaki başka bir drone'a, hedefin etrafındaki bilinmeyen bölgeleri keşfetmesi için yeni `MOVE_DRONE` görevleri ver. Amaç, hedefe yeni bir geçit bulmaktır.
 
+# BÖLÜM 4: ÖRNEK KOMUT AKIŞI
+"reasoning": "D-1 ve D-2'yi keşfe gönderiyorum. D-1'i kuzeye, D-2'yi doğuya yönlendiriyorum. Tarama modlarını ACTIVE yapıyorum. D-7'nin pili az, üsse dönüyor."
+"commands": [
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-1", "scan_mode": "ACTIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 25, "y": 45}},
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-2", "scan_mode": "ACTIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 45, "y": 25}},
+  {"command_type": "SET_SCAN_MODE", "drone_id": "D-7", "scan_mode": "PASSIVE"},
+  {"command_type": "MOVE_DRONE", "drone_id": "D-7", "target_position": {"x": 5, "y": 5}}
+]
+
+# BÖLÜM 5: ÇIKTI FORMATI
+- Cevabın TEK BİR GEÇERLİ JSON objesi olmalıdır. Her aktif ve görevi olmayan drone için komut oluştur.
+"""
+
+        # Drone'lara komut verildiğinde tick'i kaydet
+        if not MOCK_LLM_RESPONSE:
+            response_json = self._get_llm_response(system_prompt, world_state)
+        else:
+            response_json = {"reasoning": "Mock: Sending D-1 to explore NE, D-2 to explore SW.",
+                             "commands": [
+                                 {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 45, "y": 45}},
+                                 {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 5, "y": 35}}
+                             ]}
+        
+        if response_json and 'commands' in response_json:
+            for cmd in response_json['commands']:
+                if 'drone_id' in cmd:
+                    self.drone_last_command_tick[cmd['drone_id']] = self.current_tick
+        
+        return response_json
+
+    def _get_llm_response(self, system_prompt, world_state):
         print("Strategist thinking... (Making LLM API call)")
-        print(self.llm_api_key)
-        print()
         try:
             response = self.client.chat.completions.create(
                 model=self.llm_model,
@@ -191,5 +212,4 @@ Now, analyze the provided world state and generate the commands for the next tic
             return json.loads(llm_output)
         except Exception as e:
             print(f"LLM API Error: {e}")
-            # Return empty command on error
-            return {"reasoning": "API error occurred, all units on standby.", "commands": []} 
+            return {"reasoning": "API error occurred, all units on standby.", "commands": []}
