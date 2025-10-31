@@ -2,23 +2,6 @@
 
 A sophisticated multi-agent simulation where LLM-powered drones explore a grid map, avoid hidden air defense systems, and destroy targets using intelligent pathfinding and risk assessment.
 
-## 🏗️ Architecture
-
-This project uses a modular architecture with each component in its own file:
-
-```
-├── main.py                 # Entry point
-├── config.py              # Configuration and constants
-├── simulation_engine.py   # Main simulation loop
-├── grid.py                # Map and tile management
-├── drone_agent.py         # LLM-powered drone agents
-├── central_strategist.py  # Central command AI
-├── missile_system.py      # Weapon system
-├── visualizer.py          # Pygame visualization
-├── requirements.txt       # Dependencies
-├── .env                   # API keys (create this)
-└── README.md              # This file
-```
 
 ## 🧠 Key Features
 
@@ -44,31 +27,71 @@ This project uses a modular architecture with each component in its own file:
 
 ## 🚀 Quick Start
 
-### 1. **Installation**
+### 🐳 **Docker (Recommended)**
+```bash
+# 1. Setup environment
+cp env.example .env
+# Edit .env with your OpenAI API key
+
+# 2. Run with visualization
+./docker-run.sh
+
+# 3. Or run headless
+./docker-run.sh --headless
+```
+
+### 🐍 **Local Python Installation**
+
+#### 1. **Installation**
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. **Configuration**
+#### 2. **Configuration**
 Create a `.env` file:
 ```bash
 API_KEY=your_openai_api_key_here
 ```
 
-### 3. **Run Simulation**
+#### 3. **Run Simulation**
 ```bash
 python main.py
 ```
 
-### 4. **Testing Mode**
-To run without API calls, set in `config.py`:
-```python
-MOCK_LLM_RESPONSE = True
+#### 4. **Testing Mode**
+To run without API calls, set in `.env`:
+```bash
+MOCK_LLM_RESPONSE=true
 ```
+
+## 🐳 Docker Deployment
+
+For a fully containerized experience with all dependencies handled automatically:
+
+### **Features**
+- ✅ Complete environment isolation
+- ✅ X11 forwarding for visualization
+- ✅ Persistent logs and data
+- ✅ Easy configuration via environment variables
+- ✅ Headless mode for servers
+
+### **Quick Commands**
+```bash
+# Build and run with GUI
+docker-compose up --build
+
+# Run headless (no visualization)
+docker-compose --profile headless up
+
+# Interactive development
+docker-compose run --rm drone-simulation bash
+```
+
+📖 **See [DOCKER.md](DOCKER.md) for complete Docker setup guide**
 
 ## ⚙️ Configuration
 
-Edit `config.py` to customize:
+All settings can be configured via environment variables (`.env` file) or by editing `config.py`:
 
 ### **Simulation Parameters**
 ```python
@@ -195,7 +218,8 @@ Adjust `grid.py` for different map layouts or obstacle patterns.
 
 ## 📝 License
 
-Open source - feel free to modify and extend!
+This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+Feel free to modify and extend!
 
 ---
 

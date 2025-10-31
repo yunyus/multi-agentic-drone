@@ -1,6 +1,8 @@
 # FILE: central_strategist.py
 import openai
 import json
+import threading
+import time
 from config import *
 
 class CentralStrategist:
@@ -21,6 +23,12 @@ class CentralStrategist:
         self.current_tick = 0
         # DRONE'LARIN SON GÖREVLERİNİ TAKİP ETMEK İÇİN YENİ BİR YAPI
         self.drone_last_command_tick = {}
+        
+        # Threading support for non-blocking LLM calls
+        self.llm_thread = None
+        self.llm_result = None
+        self.llm_in_progress = False
+        self.llm_lock = threading.Lock()
 
 
     def collect_reports(self, reports, current_tick):
@@ -128,8 +136,32 @@ class CentralStrategist:
         }
 
     def plan_next_moves(self, current_tick, drones, missile_system, moving_enemies, active_missiles):
-        """Sends request to LLM and parses returned commands."""
-        world_state = self._format_state_for_llm(current_tick, drones, missile_system, moving_enemies, active_missiles)
+        """
+        Plans next moves using LLM. Uses threading to avoid blocking the main simulation loop.
+        Returns immediately with cached results or None if LLM is still processing.
+        """
+        self.current_tick = current_tick
+        
+        # Check if we have a completed LLM result
+        with self.llm_lock:
+            if self.llm_result is not None:
+                result = self.llm_result
+                self.llm_result = None
+                self.llm_in_progress = False
+                return result
+        
+        # If no LLM call is in progress, start a new one
+        if not self.llm_in_progress:
+            world_state = self._format_state_for_llm(current_tick, drones, missile_system, moving_enemies, active_missiles)
+            self._start_llm_call_async(world_state)
+        
+        # Return None while LLM is processing (simulation continues with existing commands)
+        return None
+    
+    def _start_llm_call_async(self, world_state):
+        """Starts an LLM call in a background thread."""
+        with self.llm_lock:
+            self.llm_in_progress = True
         
         # =================================================================
         # YENİ VE GÜÇLENDİRİLMİŞ SYSTEM PROMPT
@@ -179,22 +211,39 @@ Ana hedefin: Tüm düşmanları en az drone kaybıyla yok etmek. Öncelikli gör
 - Cevabın TEK BİR GEÇERLİ JSON objesi olmalıdır. Her aktif ve görevi olmayan drone için komut oluştur.
 """
 
-        # Drone'lara komut verildiğinde tick'i kaydet
-        if not MOCK_LLM_RESPONSE:
-            response_json = self._get_llm_response(system_prompt, world_state)
-        else:
-            response_json = {"reasoning": "Mock: Sending D-1 to explore NE, D-2 to explore SW.",
-                             "commands": [
-                                 {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 45, "y": 45}},
-                                 {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 5, "y": 35}}
-                             ]}
-        
-        if response_json and 'commands' in response_json:
-            for cmd in response_json['commands']:
-                if 'drone_id' in cmd:
-                    self.drone_last_command_tick[cmd['drone_id']] = self.current_tick
-        
-        return response_json
+        # Start the LLM call in a background thread
+        self.llm_thread = threading.Thread(target=self._llm_worker_thread, args=(system_prompt, world_state))
+        self.llm_thread.daemon = True
+        self.llm_thread.start()
+    
+    def _llm_worker_thread(self, system_prompt, world_state):
+        """Worker thread that makes the LLM API call."""
+        try:
+            # Make the LLM call
+            if not MOCK_LLM_RESPONSE:
+                response_json = self._get_llm_response(system_prompt, world_state)
+            else:
+                response_json = {"reasoning": "Mock: Sending D-1 to explore NE, D-2 to explore SW.",
+                                 "commands": [
+                                     {"command_type": "MOVE_DRONE", "drone_id": "D-1", "target_position": {"x": 45, "y": 45}},
+                                     {"command_type": "MOVE_DRONE", "drone_id": "D-2", "target_position": {"x": 5, "y": 35}}
+                                 ]}
+            
+            # Update command tick tracking
+            if response_json and 'commands' in response_json:
+                for cmd in response_json['commands']:
+                    if 'drone_id' in cmd:
+                        self.drone_last_command_tick[cmd['drone_id']] = self.current_tick
+            
+            # Store the result safely
+            with self.llm_lock:
+                self.llm_result = response_json
+                
+        except Exception as e:
+            print(f"LLM Worker Thread Error: {e}")
+            # Store error result
+            with self.llm_lock:
+                self.llm_result = {"reasoning": "API error occurred, all units on standby.", "commands": []}
 
     def _get_llm_response(self, system_prompt, world_state):
         print("Strategist thinking... (Making LLM API call)")

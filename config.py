@@ -7,14 +7,14 @@ load_dotenv()
 # API Configuration
 API_KEY = os.getenv("API_KEY")
 
-# Simulation Settings
-GRID_WIDTH = 50
-GRID_HEIGHT = 50
-NUM_DRONES = 10
-NUM_STATIONARY_ENEMIES = 2
-NUM_MOVING_ENEMIES = 2
-NUM_HSS = 4  # Hidden Air Defense Systems
-INITIAL_MISSILES = 5
+# Simulation Settings (can be overridden by environment variables)
+GRID_WIDTH = int(os.getenv("GRID_WIDTH", 50))
+GRID_HEIGHT = int(os.getenv("GRID_HEIGHT", 50))
+NUM_DRONES = int(os.getenv("NUM_DRONES", 10))
+NUM_STATIONARY_ENEMIES = int(os.getenv("NUM_STATIONARY_ENEMIES", 2))
+NUM_MOVING_ENEMIES = int(os.getenv("NUM_MOVING_ENEMIES", 2))
+NUM_HSS = int(os.getenv("NUM_HSS", 4))  # Hidden Air Defense Systems
+INITIAL_MISSILES = int(os.getenv("INITIAL_MISSILES", 5))
 
 
 NUM_OBSTACLE_BLOCKS = 5  # Haritadaki engel kümesi sayısı (bu değeri değiştirerek yoğunluğu ayarlayabilirsiniz)
@@ -27,11 +27,11 @@ MAX_BLOCK_HEIGHT = 5
 TRUE_SCAN_PROBABILITY = 0.7
 
 # LLM Settings
-LLM_MODEL = "gpt-4o"
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
 # Set to True to skip API calls and use mock response for testing
-MOCK_LLM_RESPONSE = False 
+MOCK_LLM_RESPONSE = os.getenv("MOCK_LLM_RESPONSE", "false").lower() == "true"
 # How often (in ticks) the strategist calls the LLM for new commands
-LLM_CALL_FREQUENCY = 10
+LLM_CALL_FREQUENCY = int(os.getenv("LLM_CALL_FREQUENCY", 10))
 
 # Drone Settings
 DRONE_BATTERY_MAX = 500.0
@@ -47,9 +47,9 @@ MOVING_ENEMY_SPEED = 0.5 # tiles per tick (moves every 2 ticks)
 MISSILE_SPEED = 3.0 # tiles per tick
 
 # Visualization Settings (Pygame)
-ENABLE_VISUALIZATION = True
-CELL_SIZE = 16
-FPS = 10  # Controls simulation speed
+ENABLE_VISUALIZATION = os.getenv("ENABLE_VISUALIZATION", "true").lower() == "true"
+CELL_SIZE = int(os.getenv("CELL_SIZE", 16))
+FPS = int(os.getenv("FPS", 10))  # Controls simulation speed
 
 # Colors
 COLOR_BG = (10, 10, 20)
