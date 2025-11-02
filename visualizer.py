@@ -7,7 +7,11 @@ if ENABLE_VISUALIZATION:
 class Visualizer:
     def __init__(self, engine):
         if not ENABLE_VISUALIZATION: return
+        # Initialize pygame without audio to avoid ALSA errors
+        pygame.mixer.pre_init(frequency=0, size=0, channels=0, buffer=0)
+        pygame.mixer.init()
         pygame.init()
+        pygame.mixer.quit()  # Disable audio completely
         pygame.display.set_caption("Strategist Drone Simulation")
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.font = pygame.font.SysFont('Arial', 12, bold=True)
@@ -89,13 +93,21 @@ class Visualizer:
     def draw_info(self):
         active_stationary = sum(1 for r in self.engine.grid.tiles for t in r if t.type == 'STATIONARY_ENEMY')
         active_moving = sum(1 for e in self.engine.moving_enemies if e.status == 'ACTIVE')
+        
+        # Check if LLM is processing
+        llm_status = ""
+        if hasattr(self.engine.central_strategist, 'llm_in_progress') and self.engine.central_strategist.llm_in_progress:
+            llm_status = " (AI Thinking...)"
+        
         info_texts = [
-            f"Tick: {self.engine.current_tick}",
+            f"Tick: {self.engine.current_tick}{llm_status}",
             f"Missiles Left: {self.engine.missile_system.missile_count}",
             f"Active Drones: {sum(1 for d in self.engine.drones if d.status != 'DESTROYED')}/{NUM_DRONES}",
             f"Stationary Enemies: {active_stationary}/{NUM_STATIONARY_ENEMIES}",
             f"Moving Enemies: {active_moving}/{NUM_MOVING_ENEMIES}",
         ]
         for i, text in enumerate(info_texts):
-            text_surf = self.font.render(text, True, (255, 255, 255))
+            # Use different color for the tick line when LLM is processing
+            color = (255, 255, 0) if i == 0 and llm_status else (255, 255, 255)
+            text_surf = self.font.render(text, True, color)
             self.screen.blit(text_surf, (5, 5 + i * 15))

@@ -158,7 +158,11 @@ class SimulationEngine:
         commands_json = self.central_strategist.plan_next_moves(
             self.current_tick, self.drones, self.missile_system, self.moving_enemies, self.active_missiles
         )
-        if not commands_json or 'commands' not in commands_json: return
+        # If LLM is still processing, commands_json will be None - that's OK, simulation continues
+        if not commands_json or 'commands' not in commands_json: 
+            if commands_json is None:
+                print(f"\n--- TICK {self.current_tick} | Strategist is thinking... (LLM processing) ---")
+            return
         print(f"\n--- TICK {self.current_tick} | Strategist Reasoning ---\n{commands_json.get('reasoning')}\n")
 
         threat_zones = self.central_strategist.world_model['potential_threat_zones']

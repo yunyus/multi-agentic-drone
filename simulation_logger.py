@@ -7,12 +7,15 @@ class SimulationLogger:
     Handles logging the entire state of the simulation to a JSON file.
     The log file is updated dynamically after every tick.
     """
-    def __init__(self, filename="simulation_log.json"):
+    def __init__(self, filename="logs/simulation_log.json"):
         self.filename = filename
         self.log_data = {
             "initial_state": {},
             "tick_data": []
         }
+        # Ensure logs directory exists
+        import os
+        os.makedirs(os.path.dirname(self.filename), exist_ok=True)
         # Başlangıçta boş bir dosya oluştur
         self._save_to_file()
         print(f"Logger initialized. Log file '{self.filename}' will be updated dynamically.")

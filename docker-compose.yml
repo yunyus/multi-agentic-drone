@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  drone-simulation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: multi-agentic-drone-sim
+    environment:
+      # X11 forwarding for visualization
+      - DISPLAY=${DISPLAY}
+      # Load environment variables from .env file
+      - API_KEY=${API_KEY}
+      # Optional: Override config settings via environment
+      - MOCK_LLM_RESPONSE=${MOCK_LLM_RESPONSE:-false}
+      - ENABLE_VISUALIZATION=${ENABLE_VISUALIZATION:-true}
+      - GRID_WIDTH=${GRID_WIDTH:-50}
+      - GRID_HEIGHT=${GRID_HEIGHT:-50}
+      - NUM_DRONES=${NUM_DRONES:-10}
+      - FPS=${FPS:-10}
+      # Audio/Graphics settings to avoid permission issues
+      - SDL_AUDIODRIVER=dummy
+      - PULSE_RUNTIME_PATH=""
+      - XDG_RUNTIME_DIR=/tmp/runtime-${USER_ID:-1000}
+      - SDL_MIXER_FREQUENCY=22050
+      - SDL_MIXER_SIZE=-16
+      - SDL_MIXER_CHANNELS=2
+      - SDL_MIXER_CHUNKSIZE=1024
+    volumes:
+      # X11 socket for GUI display
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Mount .env file for API keys
+      - ./.env:/app/.env:ro
+      # Mount logs directory for persistent logging (writable)
+      - ./logs:/app/logs:rw
+      # Mount data directory for simulation outputs (writable)
+      - ./data:/app/data:rw
+      # Create writable home directory for cache
+      - ./docker-home:/home/appuser:rw
+      # Mount runtime directory for audio/graphics
+      - /tmp/runtime-${USER_ID:-1000}:/tmp/runtime-${USER_ID:-1000}:rw
+    network_mode: host
+    stdin_open: true
+    tty: true
+    # Run as current user to fix permission issues
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+    devices:
+      - /dev/dri:/dev/dri  # For hardware acceleration if available
+    restart: "no"
+
+  # Alternative headless service for running without visualization
+  drone-simulation-headless:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: multi-agentic-drone-sim-headless
+    environment:
+      - API_KEY=${API_KEY}
+      - MOCK_LLM_RESPONSE=${MOCK_LLM_RESPONSE:-false}
+      - ENABLE_VISUALIZATION=false  # Force disable visualization
+      - GRID_WIDTH=${GRID_WIDTH:-50}
+      - GRID_HEIGHT=${GRID_HEIGHT:-50}
+      - NUM_DRONES=${NUM_DRONES:-10}
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    profiles:
+      - headless
+    restart: "no"
